@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, Copy, ArrowRight } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
+import { SettingsMenu } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
 
 export default function Home() {
   const navigate = useNavigate();
-  const { stream, error, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo } = useMediaStream();
+  const { stream, error, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo, currentQuality, changeQuality } = useMediaStream();
   const [meetingId, setMeetingId] = useState('');
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
@@ -27,9 +28,38 @@ export default function Home() {
 
   const handleJoinMeeting = (e: React.FormEvent) => {
     e.preventDefault();
-    if (meetingId.trim()) {
-      navigate(`/call/${meetingId.trim()}`);
+    let id = meetingId.trim();
+    if (!id) return;
+
+    // Enhanced URL parsing logic
+    try {
+      // 1. Try to treat input as a full URL
+      const url = new URL(id.startsWith('http') ? id : `https://${id}`);
+      const pathParts = url.pathname.split('/');
+      // Find the segment after 'call'
+      const callIndex = pathParts.findIndex(part => part === 'call');
+      if (callIndex !== -1 && callIndex + 1 < pathParts.length) {
+        id = pathParts[callIndex + 1];
+      } else {
+        // Fallback: take the last non-empty segment
+        const lastSegment = pathParts.filter(p => p).pop();
+        if (lastSegment) id = lastSegment;
+      }
+    } catch (e) {
+      // 2. If URL parsing fails, check for simple pattern match
+      const match = id.match(/\/call\/([a-zA-Z0-9-]+)/);
+      if (match && match[1]) {
+        id = match[1];
+      }
     }
+
+    // Clean up any remaining URL artifacts if present
+    if (id.includes('/')) {
+        const parts = id.split('/');
+        id = parts[parts.length - 1];
+    }
+
+    navigate(`/call/${id}`);
   };
 
   return (
@@ -88,6 +118,11 @@ export default function Home() {
             >
               {isVideoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
             </Button>
+            <SettingsMenu
+              currentQuality={currentQuality}
+              onQualityChange={changeQuality}
+              disabled={!stream}
+            />
           </div>
         </div>
 

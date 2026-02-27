@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
 import { Button } from '../components/Button';
+import { SettingsMenu } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { cn } from '../lib/utils';
@@ -9,7 +10,18 @@ import { cn } from '../lib/utils';
 export default function CallPage() {
   const { remotePeerId } = useParams<{ remotePeerId: string }>();
   const navigate = useNavigate();
-  const { stream, error: streamError, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo, cleanup } = useMediaStream();
+  const { 
+    stream, 
+    error: streamError, 
+    isAudioEnabled, 
+    isVideoEnabled, 
+    initializeStream, 
+    toggleAudio, 
+    toggleVideo, 
+    cleanup,
+    currentQuality,
+    changeQuality
+  } = useMediaStream();
   const { peer, myId, isPeerReady, error: peerError, callPeer, onIncomingCall } = usePeer();
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -89,7 +101,12 @@ export default function CallPage() {
   }, [isPeerReady, stream, remotePeerId, callPeer, onIncomingCall]);
 
   const copyLink = () => {
-    const link = `${window.location.origin}/call/${myId}`;
+    // Construct the full URL including the base path
+    const baseUrl = window.location.origin + import.meta.env.BASE_URL;
+    // Remove trailing slash from base url if it exists to avoid double slashes
+    const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    const link = `${cleanBaseUrl}/call/${myId}`;
+    
     navigator.clipboard.writeText(link);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -182,22 +199,30 @@ export default function CallPage() {
         </Button>
 
         <Button
-          variant="danger"
-          size="icon"
-          className="rounded-full h-16 w-16 shadow-lg shadow-red-900/20"
-          onClick={endCall}
-        >
-          <PhoneOff className="h-8 w-8" />
-        </Button>
+            variant={isVideoEnabled ? "secondary" : "danger"}
+            size="icon"
+            className="rounded-full h-12 w-12 bg-gray-700 hover:bg-gray-600"
+            onClick={toggleVideo}
+            title={isVideoEnabled ? "Turn off camera" : "Turn on camera"}
+          >
+            {isVideoEnabled ? <Video className="h-5 w-5 text-white" /> : <VideoOff className="h-5 w-5 text-white" />}
+          </Button>
 
-        <Button
-          variant={isVideoEnabled ? 'secondary' : 'danger'}
-          size="icon"
-          className="rounded-full h-14 w-14"
-          onClick={toggleVideo}
-        >
-          {isVideoEnabled ? <Video className="h-6 w-6" /> : <VideoOff className="h-6 w-6" />}
-        </Button>
+          <SettingsMenu
+            currentQuality={currentQuality}
+            onQualityChange={changeQuality}
+            disabled={!stream}
+          />
+          
+          <Button
+            variant="danger"
+            size="icon"
+            className="rounded-full h-12 w-12 hover:bg-red-700"
+            onClick={endCall}
+            title="End call"
+          >
+            <PhoneOff className="h-5 w-5 text-white" />
+          </Button>
       </div>
       
       {/* Connection Status Badge */}
