@@ -3,13 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
-import { SettingsMenu } from '../components/SettingsMenu';
+import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
 
 export default function Home() {
   const navigate = useNavigate();
   const { stream, error, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo, currentQuality, changeQuality } = useMediaStream();
   const [meetingId, setMeetingId] = useState('');
+  const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -86,7 +87,7 @@ export default function Home() {
               autoPlay
               muted
               playsInline
-              className={`w-full h-full object-cover transform scale-x-[-1] ${!isVideoEnabled ? 'hidden' : ''}`}
+              className={`w-full h-full transition-all duration-300 ${videoFitMode === 'cover' ? 'object-cover' : 'object-contain'} transform scale-x-[-1] ${!isVideoEnabled ? 'hidden' : ''}`}
             />
           )}
           
@@ -121,6 +122,8 @@ export default function Home() {
             <SettingsMenu
               currentQuality={currentQuality}
               onQualityChange={changeQuality}
+              videoFitMode={videoFitMode}
+              onVideoFitModeChange={setVideoFitMode}
               disabled={!stream}
             />
           </div>

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
 import type { MediaConnection } from 'peerjs';
 import { Button } from '../components/Button';
-import { SettingsMenu } from '../components/SettingsMenu';
+import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { cn } from '../lib/utils';
@@ -28,6 +28,7 @@ export default function CallPage() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'initializing' | 'waiting' | 'connecting' | 'connected' | 'disconnected'>('initializing');
   const [copied, setCopied] = useState(false);
+  const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -216,6 +217,8 @@ export default function CallPage() {
           <SettingsMenu
             currentQuality={currentQuality}
             onQualityChange={changeQuality}
+            videoFitMode={videoFitMode}
+            onVideoFitModeChange={setVideoFitMode}
             disabled={!stream}
           />
           
