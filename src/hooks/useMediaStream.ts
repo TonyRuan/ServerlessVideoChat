@@ -16,6 +16,8 @@ export interface VideoQuality {
 
 export const VIDEO_QUALITIES: VideoQuality[] = [
   { label: '720p (HD)', width: 1280, height: 720, frameRate: 30 },
+  { label: '1080p (Full HD)', width: 1920, height: 1080, frameRate: 30 },
+  { label: '4K (Ultra HD)', width: 3840, height: 2160, frameRate: 24 },
   { label: '480p (SD)', width: 640, height: 480, frameRate: 30 },
   { label: '360p (Low)', width: 480, height: 360, frameRate: 24 },
 ];
