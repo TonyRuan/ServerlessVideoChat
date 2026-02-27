@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, Copy, ArrowRight } from 'lucide-react';
+import { Video, Mic, MicOff, VideoOff } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { SettingsMenu } from '../components/SettingsMenu';
@@ -45,7 +45,7 @@ export default function Home() {
         const lastSegment = pathParts.filter(p => p).pop();
         if (lastSegment) id = lastSegment;
       }
-    } catch (e) {
+    } catch {
       // 2. If URL parsing fails, check for simple pattern match
       const match = id.match(/\/call\/([a-zA-Z0-9-]+)/);
       if (match && match[1]) {

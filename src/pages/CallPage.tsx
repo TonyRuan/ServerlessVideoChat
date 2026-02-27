@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
+import type { MediaConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
@@ -22,7 +23,7 @@ export default function CallPage() {
     currentQuality,
     changeQuality
   } = useMediaStream();
-  const { peer, myId, isPeerReady, error: peerError, callPeer, onIncomingCall } = usePeer();
+  const { myId, isPeerReady, error: peerError, callPeer, onIncomingCall } = usePeer();
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'initializing' | 'waiting' | 'connecting' | 'connected' | 'disconnected'>('initializing');
@@ -30,7 +31,7 @@ export default function CallPage() {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const callRef = useRef<any>(null);
+  const callRef = useRef<MediaConnection | null>(null);
 
   // Initialize local stream
   useEffect(() => {
@@ -101,9 +102,7 @@ export default function CallPage() {
   }, [isPeerReady, stream, remotePeerId, callPeer, onIncomingCall]);
 
   const copyLink = () => {
-    // Construct the full URL including the base path
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    // Remove trailing slash from base url if it exists to avoid double slashes
     const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
     const link = `${cleanBaseUrl}/call/${myId}`;
     
@@ -111,6 +110,12 @@ export default function CallPage() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const inviteLink = (() => {
+    const baseUrl = window.location.origin + import.meta.env.BASE_URL;
+    const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    return `${cleanBaseUrl}/call/${myId}`;
+  })();
 
   const endCall = () => {
     if (callRef.current) {
@@ -159,7 +164,7 @@ export default function CallPage() {
                 <div className="flex gap-2">
                   <input 
                     readOnly 
-                    value={`${window.location.origin}/call/${myId}`}
+                    value={inviteLink}
                     className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none"
                   />
                   <Button onClick={copyLink} variant="secondary" size="icon">
