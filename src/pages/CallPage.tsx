@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
-import type { MediaConnection } from 'peerjs';
+import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
-import { useMediaStream } from '../hooks/useMediaStream';
+import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { cn } from '../lib/utils';
 
@@ -23,7 +23,7 @@ export default function CallPage() {
     currentQuality,
     changeQuality
   } = useMediaStream();
-  const { myId, isPeerReady, error: peerError, callPeer, onIncomingCall } = usePeer();
+  const { myId, isPeerReady, error: peerError, callPeer, connectToPeer, onIncomingCall, onIncomingData } = usePeer();
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'initializing' | 'waiting' | 'connecting' | 'connected' | 'disconnected'>('initializing');
@@ -33,6 +33,35 @@ export default function CallPage() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const callRef = useRef<MediaConnection | null>(null);
+  const dataConnRef = useRef<DataConnection | null>(null);
+  const currentQualityRef = useRef(currentQuality);
+
+  // Update ref when quality changes
+  useEffect(() => {
+    currentQualityRef.current = currentQuality;
+  }, [currentQuality]);
+
+  // Handle quality change wrapper
+  const handleQualityChange = async (quality: VideoQuality) => {
+    // 1. Change local quality
+    await changeQuality(quality);
+    
+    // 2. Send quality update to peer
+    if (dataConnRef.current && dataConnRef.current.open) {
+      dataConnRef.current.send({ type: 'QUALITY_CHANGE', quality });
+    }
+  };
+
+  // Helper to check if data is a quality change message
+  const isQualityChangeMessage = (data: unknown): data is { type: 'QUALITY_CHANGE'; quality: VideoQuality } => {
+    return (
+      typeof data === 'object' &&
+      data !== null &&
+      'type' in data &&
+      (data as Record<string, unknown>).type === 'QUALITY_CHANGE' &&
+      'quality' in data
+    );
+  };
 
   // Initialize local stream
   useEffect(() => {
@@ -44,6 +73,26 @@ export default function CallPage() {
   useEffect(() => {
     if (localVideoRef.current && stream) {
       localVideoRef.current.srcObject = stream;
+    }
+    
+    // If stream changes (e.g. quality change), we need to replace the track in the peer connection
+    if (callRef.current && stream) {
+      const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
+      
+      if (callRef.current.peerConnection) {
+        const senders = callRef.current.peerConnection.getSenders();
+        
+        if (videoTrack) {
+          const videoSender = senders.find(s => s.track?.kind === 'video');
+          if (videoSender) videoSender.replaceTrack(videoTrack);
+        }
+        
+        if (audioTrack) {
+          const audioSender = senders.find(s => s.track?.kind === 'audio');
+          if (audioSender) audioSender.replaceTrack(audioTrack);
+        }
+      }
     }
   }, [stream]);
 
@@ -60,26 +109,54 @@ export default function CallPage() {
 
     if (remotePeerId) {
       // We are the caller
-      setConnectionStatus('connecting');
-      const call = callPeer(remotePeerId, stream);
-      
-      if (call) {
-        callRef.current = call;
-        call.on('stream', (remoteStream) => {
-          setRemoteStream(remoteStream);
-          setConnectionStatus('connected');
-        });
+      // Only initiate call if not already called
+      if (!callRef.current) {
+        setConnectionStatus('connecting');
+        const call = callPeer(remotePeerId, stream);
         
-        call.on('close', () => {
-          setConnectionStatus('disconnected');
-          setRemoteStream(null);
-        });
-
-        call.on('error', (err) => {
-            console.error('Call error:', err);
+        if (call) {
+          callRef.current = call;
+          call.on('stream', (remoteStream) => {
+            setRemoteStream(remoteStream);
+            setConnectionStatus('connected');
+          });
+          
+          call.on('close', () => {
             setConnectionStatus('disconnected');
-        });
+            setRemoteStream(null);
+            dataConnRef.current?.close();
+            callRef.current = null;
+            dataConnRef.current = null;
+          });
+  
+          call.on('error', (err) => {
+              console.error('Call error:', err);
+              setConnectionStatus('disconnected');
+          });
+        }
       }
+
+      // Also establish data connection if not exists
+      if (!dataConnRef.current) {
+        const conn = connectToPeer(remotePeerId);
+        if (conn) {
+          dataConnRef.current = conn;
+          conn.on('open', () => {
+            console.log('Data connection opened');
+          });
+          conn.on('data', (data: unknown) => {
+            if (isQualityChangeMessage(data)) {
+              const quality = data.quality;
+              console.log('Received quality change request:', quality);
+              // Only update if different to avoid loops
+              if (quality.label !== currentQualityRef.current.label) {
+                 changeQuality(quality);
+              }
+            }
+          });
+        }
+      }
+      
     } else {
       // We are waiting for a call
       setConnectionStatus('waiting');
@@ -97,10 +174,26 @@ export default function CallPage() {
         call.on('close', () => {
           setConnectionStatus('disconnected');
           setRemoteStream(null);
+          dataConnRef.current?.close();
+          callRef.current = null;
+          dataConnRef.current = null;
+        });
+      });
+
+      onIncomingData((conn) => {
+        dataConnRef.current = conn;
+        conn.on('data', (data: unknown) => {
+          if (isQualityChangeMessage(data)) {
+            const quality = data.quality;
+            console.log('Received quality change request:', quality);
+            if (quality.label !== currentQualityRef.current.label) {
+              changeQuality(quality);
+            }
+          }
         });
       });
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, onIncomingCall]);
+  }, [isPeerReady, stream, remotePeerId, callPeer, onIncomingCall, connectToPeer, onIncomingData, changeQuality]);
 
   const copyLink = () => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
@@ -219,7 +312,7 @@ export default function CallPage() {
 
           <SettingsMenu
             currentQuality={currentQuality}
-            onQualityChange={changeQuality}
+            onQualityChange={handleQualityChange}
             videoFitMode={videoFitMode}
             onVideoFitModeChange={setVideoFitMode}
             disabled={!stream}

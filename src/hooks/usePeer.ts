@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import Peer, { type MediaConnection } from 'peerjs';
+import Peer, { type MediaConnection, type DataConnection } from 'peerjs';
 
 interface PeerState {
   peer: Peer | null;
@@ -18,6 +18,7 @@ export function usePeer() {
 
   const peerRef = useRef<Peer | null>(null);
   const onCallHandlerRef = useRef<((call: MediaConnection) => void) | null>(null);
+  const onDataHandlerRef = useRef<((conn: DataConnection) => void) | null>(null);
 
   useEffect(() => {
     const peer = new Peer();
@@ -31,6 +32,12 @@ export function usePeer() {
     peer.on('call', (call) => {
       if (onCallHandlerRef.current) {
         onCallHandlerRef.current(call);
+      }
+    });
+
+    peer.on('connection', (conn) => {
+      if (onDataHandlerRef.current) {
+        onDataHandlerRef.current(conn);
       }
     });
 
@@ -52,13 +59,26 @@ export function usePeer() {
     return call;
   }, []);
 
+  const connectToPeer = useCallback((peerId: string) => {
+    if (!peerRef.current) return null;
+    
+    const conn = peerRef.current.connect(peerId);
+    return conn;
+  }, []);
+
   const onIncomingCall = useCallback((callback: (call: MediaConnection) => void) => {
     onCallHandlerRef.current = callback;
+  }, []);
+
+  const onIncomingData = useCallback((callback: (conn: DataConnection) => void) => {
+    onDataHandlerRef.current = callback;
   }, []);
 
   return {
     ...state,
     callPeer,
+    connectToPeer,
     onIncomingCall,
+    onIncomingData,
   };
 }
