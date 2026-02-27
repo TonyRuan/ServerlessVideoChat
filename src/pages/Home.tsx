@@ -87,7 +87,7 @@ export default function Home() {
               autoPlay
               muted
               playsInline
-              className={`w-full h-full transition-all duration-300 ${videoFitMode === 'cover' ? 'object-cover' : 'object-contain'} transform scale-x-[-1] ${!isVideoEnabled ? 'hidden' : ''}`}
+              className={`w-full h-full transition-all duration-300 ${videoFitMode === 'cover' ? 'object-cover' : 'object-contain bg-black'} transform scale-x-[-1] ${!isVideoEnabled ? 'hidden' : ''}`}
             />
           )}
           

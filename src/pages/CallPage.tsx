@@ -146,7 +146,10 @@ export default function CallPage() {
             ref={remoteVideoRef}
             autoPlay
             playsInline
-            className="w-full h-full object-cover"
+            className={cn(
+              "w-full h-full transition-all duration-300",
+              videoFitMode === 'cover' ? "object-cover" : "object-contain bg-black"
+            )}
           />
         ) : (
           <div className="text-center space-y-4 p-4">
