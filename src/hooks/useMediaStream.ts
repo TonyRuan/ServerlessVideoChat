@@ -32,6 +32,8 @@ export function useMediaStream() {
   
   const [currentQuality, setCurrentQuality] = useState<VideoQuality>(VIDEO_QUALITIES[0]);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioEnabledRef = useRef(true);
+  const videoEnabledRef = useRef(true);
 
   const initializeStream = useCallback(async (quality: VideoQuality = VIDEO_QUALITIES[0]) => {
     // Stop existing tracks if any
@@ -50,15 +52,22 @@ export function useMediaStream() {
         audio: true,
       });
       
+      // Apply saved enabled state to new tracks
+      stream.getAudioTracks().forEach(track => {
+        track.enabled = audioEnabledRef.current;
+      });
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = videoEnabledRef.current;
+      });
+
       streamRef.current = stream;
       setCurrentQuality(quality);
       setState(prev => ({ 
         ...prev, 
         stream, 
         error: null,
-        // Reset toggle states based on new stream tracks
-        isAudioEnabled: stream.getAudioTracks()[0]?.enabled ?? false,
-        isVideoEnabled: stream.getVideoTracks()[0]?.enabled ?? false
+        isAudioEnabled: audioEnabledRef.current,
+        isVideoEnabled: videoEnabledRef.current
       }));
       return stream;
     } catch (err) {
@@ -77,6 +86,7 @@ export function useMediaStream() {
       const audioTrack = streamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
+        audioEnabledRef.current = audioTrack.enabled;
         setState(prev => ({ ...prev, isAudioEnabled: audioTrack.enabled }));
       }
     }
@@ -87,6 +97,7 @@ export function useMediaStream() {
       const videoTrack = streamRef.current.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
+        videoEnabledRef.current = videoTrack.enabled;
         setState(prev => ({ ...prev, isVideoEnabled: videoTrack.enabled }));
       }
     }
@@ -96,6 +107,8 @@ export function useMediaStream() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      audioEnabledRef.current = true;
+      videoEnabledRef.current = true;
       setState({
         stream: null,
         error: null,
