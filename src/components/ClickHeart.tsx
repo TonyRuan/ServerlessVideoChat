@@ -8,6 +8,7 @@ interface Heart extends HeartData {
 const ClickHeart = () => {
   const [hearts, setHearts] = useState<Heart[]>([]);
   const idCounter = useRef(0);
+  const lastClickTime = useRef(0);
   
   // Get actions from store
   const triggerHeart = useHeartStore(state => state.triggerHeart);
@@ -26,6 +27,20 @@ const ClickHeart = () => {
   // Listen for local clicks
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // Ignore clicks on interactive elements
+      if (target.closest('button, input, select, textarea, a')) {
+        return;
+      }
+
+      const now = Date.now();
+      // Only trigger if double click (or rapid clicks)
+      if (now - lastClickTime.current > 300) {
+        lastClickTime.current = now;
+        return;
+      }
+      lastClickTime.current = now;
+
       // 随机生成粉色系的颜色
       const colors = ['#ff69b4', '#ff1493', '#ffc0cb', '#db7093', '#e75480'];
       const color = colors[Math.floor(Math.random() * colors.length)];

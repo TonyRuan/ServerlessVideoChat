@@ -28,6 +28,7 @@ export default function CallPage() {
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'initializing' | 'waiting' | 'connecting' | 'connected' | 'disconnected'>('initializing');
+  const [incomingCall, setIncomingCall] = useState<MediaConnection | null>(null);
   const [copied, setCopied] = useState(false);
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
 
@@ -161,75 +162,23 @@ export default function CallPage() {
   }, [remoteStream]);
 
   // Handle connection logic
+  // 1. Caller logic (Initiate call)
   useEffect(() => {
-    if (!isPeerReady || !stream) return;
-
-    if (remotePeerId) {
-      // We are the caller
-      // Only initiate call if not already called
-      if (!callRef.current) {
-        setConnectionStatus('connecting');
-        const call = callPeer(remotePeerId, stream);
-        
-        if (call) {
-          callRef.current = call;
-          call.on('stream', (remoteStream) => {
-            setRemoteStream(remoteStream);
-            setConnectionStatus('connected');
-          });
-          
-          call.on('close', () => {
-            setConnectionStatus('disconnected');
-            setRemoteStream(null);
-            dataConnRef.current?.close();
-            callRef.current = null;
-            dataConnRef.current = null;
-          });
-  
-          call.on('error', (err) => {
-              console.error('Call error:', err);
-              setConnectionStatus('disconnected');
-          });
-        }
-      }
-
-      // Also establish data connection if not exists
-      if (!dataConnRef.current) {
-        const conn = connectToPeer(remotePeerId);
-        if (conn) {
-          dataConnRef.current = conn;
-          conn.on('open', () => {
-            console.log('Data connection opened');
-          });
-          conn.on('data', (data: unknown) => {
-            if (isQualityChangeMessage(data)) {
-              const quality = data.quality;
-              console.log('Received quality change request:', quality);
-              // Only update if different to avoid loops
-              if (quality.label !== currentQualityRef.current.label) {
-                 changeQuality(quality);
-              }
-            } else if (isHeartMessage(data)) {
-              receiveHeart(data.heart);
-            }
-          });
-        }
-      }
+    if (!isPeerReady || !stream || !remotePeerId) return;
+    
+    // We are the caller
+    // Only initiate call if not already called
+    if (!callRef.current) {
+      setConnectionStatus('connecting');
+      const call = callPeer(remotePeerId, stream);
       
-    } else {
-      // We are waiting for a call
-      setConnectionStatus('waiting');
-      
-      onIncomingCall((call) => {
-        setConnectionStatus('connecting');
-        call.answer(stream);
+      if (call) {
         callRef.current = call;
-        
         call.on('stream', (remoteStream) => {
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
         });
-
+        
         call.on('close', () => {
           setConnectionStatus('disconnected');
           setRemoteStream(null);
@@ -237,22 +186,109 @@ export default function CallPage() {
           callRef.current = null;
           dataConnRef.current = null;
         });
-      });
 
-      onIncomingData((conn) => {
+        call.on('error', (err) => {
+            console.error('Call error:', err);
+            setConnectionStatus('disconnected');
+        });
+      }
+    }
+
+    // Also establish data connection if not exists
+    if (!dataConnRef.current) {
+      const conn = connectToPeer(remotePeerId);
+      if (conn) {
         dataConnRef.current = conn;
+        conn.on('open', () => {
+          console.log('Data connection opened');
+        });
         conn.on('data', (data: unknown) => {
           if (isQualityChangeMessage(data)) {
             const quality = data.quality;
             console.log('Received quality change request:', quality);
+            // Only update if different to avoid loops
             if (quality.label !== currentQualityRef.current.label) {
-              changeQuality(quality);
+                changeQuality(quality);
             }
+          } else if (isHeartMessage(data)) {
+            receiveHeart(data.heart);
           }
         });
-      });
+      }
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, onIncomingCall, connectToPeer, onIncomingData, changeQuality]);
+  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, changeQuality]);
+
+  // 2. Callee logic - Register listeners (Signaling)
+  // Register listeners immediately when Peer is ready, do NOT wait for stream
+  useEffect(() => {
+    if (!isPeerReady || remotePeerId) return; // Only if we are callee (no remotePeerId)
+    
+    // We are waiting for a call
+    setConnectionStatus('waiting');
+    
+    onIncomingCall((call) => {
+      console.log('Incoming call received');
+      setIncomingCall(call);
+      setConnectionStatus('connecting');
+    });
+
+    onIncomingData((conn) => {
+      console.log('Incoming data connection received');
+      dataConnRef.current = conn;
+      conn.on('data', (data: unknown) => {
+        if (isQualityChangeMessage(data)) {
+          const quality = data.quality;
+          console.log('Received quality change request:', quality);
+          if (quality.label !== currentQualityRef.current.label) {
+            changeQuality(quality);
+          }
+        } else if (isHeartMessage(data)) {
+          receiveHeart(data.heart);
+        }
+      });
+    });
+  }, [isPeerReady, remotePeerId, onIncomingCall, onIncomingData, changeQuality]);
+
+  // 3. Callee logic - Handle incoming call events
+  useEffect(() => {
+    if (!incomingCall) return;
+
+    // Register listeners immediately
+    incomingCall.on('stream', (remoteStream) => {
+      console.log('Received remote stream');
+      setRemoteStream(remoteStream);
+      setConnectionStatus('connected');
+    });
+
+    incomingCall.on('close', () => {
+      setConnectionStatus('disconnected');
+      setRemoteStream(null);
+      dataConnRef.current?.close();
+      callRef.current = null;
+      dataConnRef.current = null;
+      setIncomingCall(null);
+    });
+
+    incomingCall.on('error', (err) => {
+      console.error('Incoming call error:', err);
+      setConnectionStatus('disconnected');
+    });
+
+    return () => {
+      // Cleanup listeners if needed? PeerJS handles this on close
+    };
+  }, [incomingCall]);
+
+  // 4. Callee logic - Answer call (Stream handling)
+  // Answer call when stream becomes available
+  useEffect(() => {
+    if (!incomingCall || !stream) return;
+    if (callRef.current === incomingCall) return; // Already answered
+
+    console.log('Answering incoming call with stream');
+    incomingCall.answer(stream);
+    callRef.current = incomingCall;
+  }, [incomingCall, stream]);
 
   const copyLink = () => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
@@ -312,6 +348,8 @@ export default function CallPage() {
             <h2 className="text-2xl font-semibold">
               {connectionStatus === 'waiting' ? '等待对方加入...' : 
                connectionStatus === 'connecting' ? '连接中...' : 
+               connectionStatus === 'connected' ? '已连接' :
+               connectionStatus === 'disconnected' ? '连接已断开' :
                '初始化中...'}
             </h2>
             
