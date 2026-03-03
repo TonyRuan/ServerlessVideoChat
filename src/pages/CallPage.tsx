@@ -256,9 +256,10 @@ export default function CallPage() {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
         <div className="text-center space-y-4">
-          <p className="text-red-500 text-xl">An error occurred</p>
-          <p className="text-gray-400">{streamError?.message || peerError?.message}</p>
-          <Button onClick={() => navigate('/')}>Go Back</Button>
+          <p className="text-red-500 text-xl">连接服务发生错误</p>
+          <p className="text-gray-400">可能是网络问题或服务暂时不可用。</p>
+          <p className="text-sm text-gray-500">{streamError?.message || peerError?.message}</p>
+          <Button onClick={() => navigate('/')}>返回首页</Button>
         </div>
       </div>
     );
@@ -284,14 +285,14 @@ export default function CallPage() {
               <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
             </div>
             <h2 className="text-2xl font-semibold">
-              {connectionStatus === 'waiting' ? 'Waiting for someone to join...' : 
-               connectionStatus === 'connecting' ? 'Connecting...' : 
-               'Initializing...'}
+              {connectionStatus === 'waiting' ? '等待对方加入...' : 
+               connectionStatus === 'connecting' ? '连接中...' : 
+               '初始化中...'}
             </h2>
             
             {connectionStatus === 'waiting' && myId && (
               <div className="mt-8 p-6 bg-gray-800 rounded-xl max-w-md mx-auto border border-gray-700">
-                <p className="text-gray-400 mb-2 text-sm">Share this link to invite others</p>
+                <p className="text-gray-400 mb-2 text-sm">分享此链接邀请他人</p>
                 <div className="flex gap-2">
                   <input 
                     readOnly 

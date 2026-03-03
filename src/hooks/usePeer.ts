@@ -21,7 +21,14 @@ export function usePeer() {
   const onDataHandlerRef = useRef<((conn: DataConnection) => void) | null>(null);
 
   useEffect(() => {
-    const peer = new Peer();
+    const peer = new Peer(undefined, {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' },
+        ],
+      },
+    });
     
     peer.on('open', (id) => {
       console.log('My peer ID is: ' + id);

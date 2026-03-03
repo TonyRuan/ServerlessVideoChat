@@ -68,18 +68,18 @@ export default function Home() {
       <div className="w-full max-w-md space-y-8">
         <div className="text-center">
           <h1 className="text-4xl font-bold tracking-tight text-blue-500 mb-2">VideoChat</h1>
-          <p className="text-gray-400">Secure, peer-to-peer video calls.</p>
+          <p className="text-gray-400">安全、点对点视频通话。</p>
         </div>
 
         {/* Video Preview */}
         <div className="relative aspect-video bg-gray-800 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-gray-700">
           {error ? (
             <div className="absolute inset-0 flex items-center justify-center text-red-400 p-4 text-center">
-              <p>Camera access denied. Please enable permissions to continue.</p>
+              <p>摄像头访问被拒绝。请启用权限以继续。</p>
             </div>
           ) : !stream ? (
             <div className="absolute inset-0 flex items-center justify-center text-gray-500">
-              <p>Initializing camera...</p>
+              <p>初始化摄像头...</p>
             </div>
           ) : (
             <video
@@ -137,7 +137,7 @@ export default function Home() {
             disabled={!stream && !error}
           >
             <Video className="mr-2 h-5 w-5" />
-            New Meeting
+            新建会议
           </Button>
           
           <div className="relative">
@@ -145,13 +145,13 @@ export default function Home() {
               <span className="w-full border-t border-gray-700" />
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-gray-900 px-2 text-gray-500">Or join with code</span>
+              <span className="bg-gray-900 px-2 text-gray-500">或者使用代码加入</span>
             </div>
           </div>
 
           <form onSubmit={handleJoinMeeting} className="flex gap-2">
             <Input
-              placeholder="Enter meeting code"
+              placeholder="输入会议代码"
               value={meetingId}
               onChange={(e) => setMeetingId(e.target.value)}
               className="bg-gray-800 border-gray-700 text-white focus:ring-blue-500 h-12"
@@ -162,7 +162,7 @@ export default function Home() {
               className="h-12 px-6"
               disabled={!meetingId.trim() || (!stream && !error)}
             >
-              Join
+              加入
             </Button>
           </form>
         </div>

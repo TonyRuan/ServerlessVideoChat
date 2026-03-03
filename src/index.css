@@ -12,3 +12,23 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+@keyframes floatUp {
+  0% {
+    transform: translate(-50%, -50%) scale(0.2);
+    opacity: 1;
+  }
+  25% {
+    transform: translate(calc(-50% + var(--tx)), -80px) scale(0.6);
+  }
+  50% {
+    transform: translate(calc(-50% - var(--tx)), -160px) scale(1.0);
+  }
+  75% {
+    transform: translate(calc(-50% + var(--tx)), -240px) scale(1.1);
+  }
+  100% {
+    transform: translate(calc(-50% - var(--tx)), -350px) scale(1.2);
+    opacity: 0;
+  }
+}
