@@ -6,6 +6,7 @@ import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
+import { useHeartStore, type HeartData } from '../stores/heartStore';
 import { cn } from '../lib/utils';
 
 export default function CallPage() {
@@ -36,6 +37,10 @@ export default function CallPage() {
   const dataConnRef = useRef<DataConnection | null>(null);
   const currentQualityRef = useRef(currentQuality);
   
+  // Heart store
+  const outgoingHeart = useHeartStore(state => state.outgoingHeart);
+  const receiveHeart = useHeartStore(state => state.receiveHeart);
+
   // Controls visibility state
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -86,6 +91,13 @@ export default function CallPage() {
     }
   };
 
+  // Handle outgoing heart
+  useEffect(() => {
+    if (outgoingHeart && dataConnRef.current && dataConnRef.current.open) {
+      dataConnRef.current.send({ type: 'HEART', heart: outgoingHeart });
+    }
+  }, [outgoingHeart]);
+
   // Helper to check if data is a quality change message
   const isQualityChangeMessage = (data: unknown): data is { type: 'QUALITY_CHANGE'; quality: VideoQuality } => {
     return (
@@ -94,6 +106,17 @@ export default function CallPage() {
       'type' in data &&
       (data as Record<string, unknown>).type === 'QUALITY_CHANGE' &&
       'quality' in data
+    );
+  };
+
+  // Helper to check if data is a heart message
+  const isHeartMessage = (data: unknown): data is { type: 'HEART'; heart: HeartData } => {
+    return (
+      typeof data === 'object' &&
+      data !== null &&
+      'type' in data &&
+      (data as Record<string, unknown>).type === 'HEART' &&
+      'heart' in data
     );
   };
 
@@ -186,6 +209,8 @@ export default function CallPage() {
               if (quality.label !== currentQualityRef.current.label) {
                  changeQuality(quality);
               }
+            } else if (isHeartMessage(data)) {
+              receiveHeart(data.heart);
             }
           });
         }
