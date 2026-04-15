@@ -6,8 +6,8 @@
     <title>Redirecting...</title>
     <script>
       (function () {
-        var pathSegmentsToKeep = 1;
         var l = window.location;
+        var pathSegmentsToKeep = l.pathname.startsWith('/ServerlessVideoChat/') ? 1 : 0;
         l.replace(
           l.protocol +
             '//' +
