@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
+import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2, Volume2, VolumeX } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
@@ -32,6 +32,7 @@ export default function CallPage() {
   const [incomingCall, setIncomingCall] = useState<MediaConnection | null>(null);
   const [copied, setCopied] = useState(false);
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
+  const [isRemoteMuted, setIsRemoteMuted] = useState(true);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -174,9 +175,14 @@ export default function CallPage() {
   // Handle remote video stream
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
+      const video = remoteVideoRef.current;
+      video.srcObject = remoteStream;
+      video.muted = isRemoteMuted;
+      void video.play().catch(() => {
+        setIsRemoteMuted(true);
+      });
     }
-  }, [remoteStream]);
+  }, [remoteStream, isRemoteMuted]);
 
   // Handle connection logic
   // 1. Caller logic (Initiate call)
@@ -245,12 +251,20 @@ export default function CallPage() {
     
     onIncomingCall((call) => {
       console.log('Incoming call received');
+      if (callRef.current) {
+        call.close();
+        return;
+      }
       setIncomingCall(call);
       setConnectionStatus('connecting');
     });
 
     onIncomingData((conn) => {
       console.log('Incoming data connection received');
+      if (dataConnRef.current && dataConnRef.current.open) {
+        conn.close();
+        return;
+      }
       dataConnRef.current = conn;
       conn.on('data', (data: unknown) => {
         if (isQualityChangeMessage(data)) {
@@ -352,6 +366,7 @@ export default function CallPage() {
             ref={remoteVideoRef}
             autoPlay
             playsInline
+            muted={isRemoteMuted}
             className={cn(
               "w-full h-full transition-all duration-300",
               videoFitMode === 'cover' ? "object-cover" : "object-contain bg-black"
@@ -416,6 +431,16 @@ export default function CallPage() {
           onClick={toggleAudio}
         >
           {isAudioEnabled ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
+        </Button>
+
+        <Button
+          variant={isRemoteMuted ? 'secondary' : 'secondary'}
+          size="icon"
+          className="rounded-full h-14 w-14"
+          onClick={() => setIsRemoteMuted((v) => !v)}
+          title={isRemoteMuted ? '开启对方声音' : '静音对方声音'}
+        >
+          {isRemoteMuted ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />}
         </Button>
 
         <Button
