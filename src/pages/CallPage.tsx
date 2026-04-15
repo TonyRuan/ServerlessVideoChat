@@ -33,12 +33,15 @@ export default function CallPage() {
   const [copied, setCopied] = useState(false);
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
   const [isRemoteMuted, setIsRemoteMuted] = useState(true);
+  const [rtcIceState, setRtcIceState] = useState<string>('');
+  const [rtcConnectionState, setRtcConnectionState] = useState<string>('');
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const callRef = useRef<MediaConnection | null>(null);
   const dataConnRef = useRef<DataConnection | null>(null);
   const currentQualityRef = useRef(currentQuality);
+  const pcCleanupRef = useRef<(() => void) | null>(null);
   
   // Heart store
   const outgoingHeart = useHeartStore(state => state.outgoingHeart);
@@ -129,6 +132,34 @@ export default function CallPage() {
     return () => cleanup();
   }, [initializeStream, cleanup]);
 
+  const attachPeerConnectionDebug = useCallback((pc: RTCPeerConnection | null | undefined) => {
+    pcCleanupRef.current?.();
+    pcCleanupRef.current = null;
+
+    if (!pc) return;
+
+    const update = () => {
+      setRtcIceState(pc.iceConnectionState);
+      setRtcConnectionState(pc.connectionState);
+    };
+
+    update();
+    pc.addEventListener('iceconnectionstatechange', update);
+    pc.addEventListener('connectionstatechange', update);
+
+    pcCleanupRef.current = () => {
+      pc.removeEventListener('iceconnectionstatechange', update);
+      pc.removeEventListener('connectionstatechange', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      pcCleanupRef.current?.();
+      pcCleanupRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     if (remotePeerId) return;
     if (!myId) return;
@@ -197,6 +228,7 @@ export default function CallPage() {
       
       if (call) {
         callRef.current = call;
+        attachPeerConnectionDebug(call.peerConnection);
         call.on('stream', (remoteStream) => {
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
@@ -208,6 +240,7 @@ export default function CallPage() {
           dataConnRef.current?.close();
           callRef.current = null;
           dataConnRef.current = null;
+          attachPeerConnectionDebug(null);
         });
 
         call.on('error', (err) => {
@@ -285,6 +318,7 @@ export default function CallPage() {
     if (!incomingCall) return;
 
     // Register listeners immediately
+    attachPeerConnectionDebug(incomingCall.peerConnection);
     incomingCall.on('stream', (remoteStream) => {
       console.log('Received remote stream');
       setRemoteStream(remoteStream);
@@ -298,6 +332,7 @@ export default function CallPage() {
       callRef.current = null;
       dataConnRef.current = null;
       setIncomingCall(null);
+      attachPeerConnectionDebug(null);
     });
 
     incomingCall.on('error', (err) => {
@@ -384,6 +419,18 @@ export default function CallPage() {
                connectionStatus === 'disconnected' ? '连接已断开' :
                '初始化中...'}
             </h2>
+
+            {(rtcIceState || rtcConnectionState) && (
+              <p className="text-sm text-gray-500">
+                ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
+              </p>
+            )}
+
+            {rtcIceState === 'failed' && (
+              <p className="text-sm text-amber-400">
+                当前网络环境直连失败，通常需要配置 TURN 中继服务才能跨设备稳定通话。
+              </p>
+            )}
             
             {connectionStatus === 'waiting' && myId && (
               <div className="mt-8 p-6 bg-gray-800 rounded-xl max-w-md mx-auto border border-gray-700">

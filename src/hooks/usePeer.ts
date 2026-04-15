@@ -21,12 +21,35 @@ export function usePeer() {
   const onDataHandlerRef = useRef<((conn: DataConnection) => void) | null>(null);
 
   useEffect(() => {
+    const baseIceServers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+    ];
+
+    const turnUrls = (import.meta.env.VITE_TURN_URLS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME as string | undefined;
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
+
+    const iceServers: RTCIceServer[] = [...baseIceServers];
+    if (turnUrls.length > 0) {
+      if (turnUsername && turnCredential) {
+        iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
+      } else {
+        iceServers.push({ urls: turnUrls });
+      }
+    }
+
     const peer = new Peer(undefined, {
       config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
-        ],
+        iceServers,
       },
     });
     
