@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2 } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
@@ -12,6 +12,7 @@ import { cn } from '../lib/utils';
 export default function CallPage() {
   const { remotePeerId } = useParams<{ remotePeerId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { 
     stream, 
     error: streamError, 
@@ -126,6 +127,22 @@ export default function CallPage() {
     initializeStream();
     return () => cleanup();
   }, [initializeStream, cleanup]);
+
+  useEffect(() => {
+    if (remotePeerId) return;
+    if (!myId) return;
+
+    const raw = `${location.search ?? ''} ${location.hash ?? ''}`;
+    const match = raw.match(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i
+    );
+    if (!match) return;
+
+    const extractedPeerId = match[0];
+    if (extractedPeerId === myId) return;
+
+    navigate(`/call/${extractedPeerId}`, { replace: true });
+  }, [remotePeerId, myId, location.search, location.hash, navigate]);
 
   // Handle local video stream
   useEffect(() => {
