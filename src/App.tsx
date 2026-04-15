@@ -4,8 +4,10 @@ import CallPage from './pages/CallPage';
 import ClickHeart from './components/ClickHeart';
 
 function App() {
+  const basename = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL;
+
   return (
-    <BrowserRouter basename={import.meta.env.BASE_URL}>
+    <BrowserRouter basename={basename}>
       <ClickHeart />
       <Routes>
         <Route path="/" element={<Home />} />
