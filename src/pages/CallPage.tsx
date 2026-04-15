@@ -35,6 +35,12 @@ export default function CallPage() {
   const [isRemoteMuted, setIsRemoteMuted] = useState(true);
   const [rtcIceState, setRtcIceState] = useState<string>('');
   const [rtcConnectionState, setRtcConnectionState] = useState<string>('');
+  const [remoteVideoWidth, setRemoteVideoWidth] = useState(0);
+  const [remoteVideoHeight, setRemoteVideoHeight] = useState(0);
+  const [remoteVideoReadyState, setRemoteVideoReadyState] = useState(0);
+  const [remoteVideoPaused, setRemoteVideoPaused] = useState(true);
+  const [inboundVideoBytes, setInboundVideoBytes] = useState<number | null>(null);
+  const [inboundAudioBytes, setInboundAudioBytes] = useState<number | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -205,15 +211,82 @@ export default function CallPage() {
 
   // Handle remote video stream
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      const video = remoteVideoRef.current;
-      video.srcObject = remoteStream;
-      video.muted = isRemoteMuted;
-      void video.play().catch(() => {
-        setIsRemoteMuted(true);
-      });
-    }
+    if (!remoteVideoRef.current || !remoteStream) return;
+
+    const video = remoteVideoRef.current;
+    video.srcObject = remoteStream;
+    video.muted = isRemoteMuted;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+
+    const update = () => {
+      setRemoteVideoWidth(video.videoWidth || 0);
+      setRemoteVideoHeight(video.videoHeight || 0);
+      setRemoteVideoReadyState(video.readyState || 0);
+      setRemoteVideoPaused(video.paused);
+    };
+
+    update();
+    video.addEventListener('loadedmetadata', update);
+    video.addEventListener('resize', update);
+    video.addEventListener('playing', update);
+    video.addEventListener('pause', update);
+
+    void video.play().catch(() => {
+      setIsRemoteMuted(true);
+    });
+
+    return () => {
+      video.removeEventListener('loadedmetadata', update);
+      video.removeEventListener('resize', update);
+      video.removeEventListener('playing', update);
+      video.removeEventListener('pause', update);
+    };
   }, [remoteStream, isRemoteMuted]);
+
+  // Handle connection logic
+  useEffect(() => {
+    if (rtcConnectionState === '' && rtcIceState === '') return;
+
+    const interval = setInterval(async () => {
+      const pc = callRef.current?.peerConnection;
+      if (!pc) return;
+
+      try {
+        const stats = await pc.getStats();
+        let videoBytes = 0;
+        let audioBytes = 0;
+        let hasVideo = false;
+        let hasAudio = false;
+
+        stats.forEach((report) => {
+          const r = report as unknown as {
+            type?: string;
+            kind?: string;
+            mediaType?: string;
+            bytesReceived?: number;
+          };
+          if (r.type !== 'inbound-rtp') return;
+          const kind = r.kind ?? r.mediaType;
+          if (kind === 'video') {
+            hasVideo = true;
+            videoBytes += r.bytesReceived ?? 0;
+          } else if (kind === 'audio') {
+            hasAudio = true;
+            audioBytes += r.bytesReceived ?? 0;
+          }
+        });
+
+        setInboundVideoBytes(hasVideo ? videoBytes : null);
+        setInboundAudioBytes(hasAudio ? audioBytes : null);
+      } catch {
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [rtcIceState, rtcConnectionState]);
 
   // Handle connection logic
   // 1. Caller logic (Initiate call)
@@ -397,16 +470,25 @@ export default function CallPage() {
       {/* Remote Video (Full Screen) */}
       <div className="absolute inset-0 flex items-center justify-center">
         {remoteStream ? (
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            muted={isRemoteMuted}
-            className={cn(
-              "w-full h-full transition-all duration-300",
-              videoFitMode === 'cover' ? "object-cover" : "object-contain bg-black"
+          <>
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              muted={isRemoteMuted}
+              className={cn(
+                "w-full h-full transition-all duration-300",
+                videoFitMode === 'cover' ? "object-cover" : "object-contain bg-black"
+              )}
+            />
+            {remoteStream.getVideoTracks().length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="px-4 py-2 rounded-lg bg-gray-900/70 text-sm text-gray-200 border border-gray-700">
+                  对方未发送视频轨道（可能关闭了摄像头或没有授权）
+                </div>
+              </div>
             )}
-          />
+          </>
         ) : (
           <div className="text-center space-y-4 p-4">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-gray-800 animate-pulse">
@@ -520,7 +602,8 @@ export default function CallPage() {
       </div>
       
       {/* Connection Status Badge */}
-      <div className="absolute top-4 left-4 px-3 py-1 bg-gray-800/80 backdrop-blur rounded-full text-xs font-medium text-gray-300 border border-gray-700 flex items-center gap-2">
+      <div className="absolute top-4 left-4 px-3 py-2 bg-gray-800/80 backdrop-blur rounded-xl text-xs font-medium text-gray-300 border border-gray-700">
+        <div className="flex items-center gap-2">
         <span className={cn(
           "w-2 h-2 rounded-full",
           connectionStatus === 'connected' ? "bg-green-500" :
@@ -528,6 +611,17 @@ export default function CallPage() {
           "bg-yellow-500 animate-pulse"
         )} />
         {connectionStatus.charAt(0).toUpperCase() + connectionStatus.slice(1)}
+        </div>
+        <div className="mt-1 text-[11px] text-gray-400">
+          ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
+        </div>
+        <div className="mt-1 text-[11px] text-gray-400">
+          V: {remoteStream ? remoteStream.getVideoTracks().length : 0} / A: {remoteStream ? remoteStream.getAudioTracks().length : 0}
+          {' '}· Size: {remoteVideoWidth}x{remoteVideoHeight} · RS: {remoteVideoReadyState} · {remoteVideoPaused ? 'paused' : 'playing'}
+        </div>
+        <div className="mt-1 text-[11px] text-gray-400">
+          In: video {inboundVideoBytes ?? '-'} / audio {inboundAudioBytes ?? '-'}
+        </div>
       </div>
     </div>
   );
