@@ -41,6 +41,7 @@ export default function CallPage() {
   const [remoteVideoPaused, setRemoteVideoPaused] = useState(true);
   const [inboundVideoBytes, setInboundVideoBytes] = useState<number | null>(null);
   const [inboundAudioBytes, setInboundAudioBytes] = useState<number | null>(null);
+  const [remotePlayError, setRemotePlayError] = useState<string>('');
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -234,8 +235,18 @@ export default function CallPage() {
     video.addEventListener('playing', update);
     video.addEventListener('pause', update);
 
-    void video.play().catch(() => {
-      setIsRemoteMuted(true);
+    setRemotePlayError('');
+    void video.play().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setRemotePlayError(message);
+      if (!video.muted) {
+        video.muted = true;
+        setIsRemoteMuted(true);
+      }
+      void video.play().catch((err2) => {
+        const message2 = err2 instanceof Error ? err2.message : String(err2);
+        setRemotePlayError(message2);
+      });
     });
 
     return () => {
@@ -246,10 +257,7 @@ export default function CallPage() {
     };
   }, [remoteStream, isRemoteMuted]);
 
-  // Handle connection logic
   useEffect(() => {
-    if (rtcConnectionState === '' && rtcIceState === '') return;
-
     const interval = setInterval(async () => {
       const pc = callRef.current?.peerConnection;
       if (!pc) return;
@@ -286,7 +294,7 @@ export default function CallPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [rtcIceState, rtcConnectionState]);
+  }, []);
 
   // Handle connection logic
   // 1. Caller logic (Initiate call)
@@ -427,6 +435,7 @@ export default function CallPage() {
     console.log('Answering incoming call with stream');
     incomingCall.answer(stream);
     callRef.current = incomingCall;
+    attachPeerConnectionDebug(incomingCall.peerConnection);
   }, [incomingCall, stream]);
 
   const copyLink = () => {
@@ -622,6 +631,11 @@ export default function CallPage() {
         <div className="mt-1 text-[11px] text-gray-400">
           In: video {inboundVideoBytes ?? '-'} / audio {inboundAudioBytes ?? '-'}
         </div>
+        {remotePlayError && (
+          <div className="mt-1 text-[11px] text-amber-400">
+            Play: {remotePlayError}
+          </div>
+        )}
       </div>
     </div>
   );
