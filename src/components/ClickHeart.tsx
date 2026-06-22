@@ -1,9 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import { useHeartStore, type HeartData } from '../stores/heartStore';
 
-interface Heart extends HeartData {
-  // We use the same interface but render using absolute pixels calculated from relative
-}
+type Heart = HeartData;
+type HeartStyle = CSSProperties & { '--tx': string };
 
 const ClickHeart = () => {
   const [hearts, setHearts] = useState<Heart[]>([]);
@@ -111,9 +110,8 @@ const ClickHeart = () => {
             animation: 'floatUp 2s ease-out forwards',
             userSelect: 'none',
             pointerEvents: 'none',
-            // @ts-ignore: Custom CSS variable
             '--tx': `${heart.tx}px`,
-          } as React.CSSProperties}
+          } as HeartStyle}
         >
           ❤
         </span>

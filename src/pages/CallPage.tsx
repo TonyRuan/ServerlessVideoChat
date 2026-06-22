@@ -1,12 +1,22 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2, Volume2, VolumeX } from 'lucide-react';
+import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2, Volume2, VolumeX, MessageCircle } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
+import { ChatPanel } from '../components/ChatPanel';
 import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { useHeartStore, type HeartData } from '../stores/heartStore';
+import { useChatStore } from '../stores/chatStore';
+import type { ChatImageAttachment } from '../lib/chatStorage';
+import {
+  createChatCryptoSession,
+  isChatCryptoKeyMessage,
+  isEncryptedChatEnvelope,
+  type ChatCryptoSession,
+} from '../lib/chatCrypto';
+import { createWireChatMessage, isWireChatPayload } from '../lib/chatProtocol';
 import { cn } from '../lib/utils';
 
 export default function CallPage() {
@@ -42,6 +52,10 @@ export default function CallPage() {
   const [inboundVideoBytes, setInboundVideoBytes] = useState<number | null>(null);
   const [inboundAudioBytes, setInboundAudioBytes] = useState<number | null>(null);
   const [remotePlayError, setRemotePlayError] = useState<string>('');
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isDataConnected, setIsDataConnected] = useState(false);
+  const [isChatSecure, setIsChatSecure] = useState(false);
+  const [conversationPeerId, setConversationPeerId] = useState<string | null>(remotePeerId ?? null);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -49,10 +63,19 @@ export default function CallPage() {
   const dataConnRef = useRef<DataConnection | null>(null);
   const currentQualityRef = useRef(currentQuality);
   const pcCleanupRef = useRef<(() => void) | null>(null);
+  const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
+  const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
+  const chatCryptoPublicKeySentRef = useRef(false);
   
   // Heart store
   const outgoingHeart = useHeartStore(state => state.outgoingHeart);
   const receiveHeart = useHeartStore(state => state.receiveHeart);
+  const unreadChatCount = useChatStore(state => state.unreadCount);
+  const setChatPanelOpen = useChatStore(state => state.setPanelOpen);
+  const setConversationPeers = useChatStore(state => state.setConversationPeers);
+  const createLocalMessage = useChatStore(state => state.createLocalMessage);
+  const addIncomingWireMessage = useChatStore(state => state.addIncomingWireMessage);
+  const updateMessageStatus = useChatStore(state => state.updateMessageStatus);
 
   // Controls visibility state
   const [showControls, setShowControls] = useState(true);
@@ -88,10 +111,52 @@ export default function CallPage() {
     };
   }, [resetInactivityTimer]);
 
+  useEffect(() => {
+    setChatPanelOpen(isChatOpen);
+  }, [isChatOpen, setChatPanelOpen]);
+
+  useEffect(() => {
+    if (!myId || !conversationPeerId) return;
+    setConversationPeers(myId, conversationPeerId);
+  }, [myId, conversationPeerId, setConversationPeers]);
+
+  useEffect(() => {
+    if (remotePeerId) {
+      setConversationPeerId(remotePeerId);
+    }
+  }, [remotePeerId]);
+
   // Update ref when quality changes
   useEffect(() => {
     currentQualityRef.current = currentQuality;
   }, [currentQuality]);
+
+  const resetChatCryptoState = useCallback(() => {
+    chatCryptoSessionRef.current = null;
+    chatCryptoSessionPromiseRef.current = null;
+    chatCryptoPublicKeySentRef.current = false;
+    setIsChatSecure(false);
+  }, []);
+
+  const ensureChatCryptoSession = useCallback(async (conn?: DataConnection | null) => {
+    if (!chatCryptoSessionPromiseRef.current) {
+      chatCryptoSessionPromiseRef.current = createChatCryptoSession().then((session) => {
+        chatCryptoSessionRef.current = session;
+        return session;
+      });
+    }
+
+    const session = await chatCryptoSessionPromiseRef.current;
+    if (conn?.open && !chatCryptoPublicKeySentRef.current) {
+      conn.send({
+        type: 'CHAT_CRYPTO_KEY',
+        version: 1,
+        publicKey: session.publicKey,
+      });
+      chatCryptoPublicKeySentRef.current = true;
+    }
+    return session;
+  }, []);
 
   // Handle quality change wrapper
   const handleQualityChange = async (quality: VideoQuality) => {
@@ -132,6 +197,90 @@ export default function CallPage() {
       'heart' in data
     );
   };
+
+  const handleDataMessage = useCallback(async (data: unknown) => {
+    if (isChatCryptoKeyMessage(data)) {
+      try {
+        const session = await ensureChatCryptoSession(dataConnRef.current);
+        await session.acceptPeerPublicKey(data.publicKey);
+        setIsChatSecure(true);
+      } catch (err) {
+        console.error('Chat crypto handshake failed:', err);
+        setIsChatSecure(false);
+      }
+      return;
+    }
+
+    if (isEncryptedChatEnvelope(data)) {
+      try {
+        const session = await ensureChatCryptoSession(dataConnRef.current);
+        const payload = await session.decrypt(data);
+        if (isWireChatPayload(payload)) {
+          if (myId) {
+            setConversationPeers(myId, payload.message.from);
+          }
+          addIncomingWireMessage(payload);
+        }
+      } catch (err) {
+        console.error('Encrypted chat message failed:', err);
+      }
+      return;
+    }
+
+    if (isQualityChangeMessage(data)) {
+      const quality = data.quality;
+      console.log('Received quality change request:', quality);
+      if (quality.label !== currentQualityRef.current.label) {
+        changeQuality(quality);
+      }
+    } else if (isHeartMessage(data)) {
+      receiveHeart(data.heart);
+    }
+  }, [addIncomingWireMessage, changeQuality, ensureChatCryptoSession, myId, receiveHeart, setConversationPeers]);
+
+  const resetDataConnection = useCallback(() => {
+    resetChatCryptoState();
+    setIsDataConnected(false);
+    setIsChatSecure(false);
+  }, [resetChatCryptoState]);
+
+  const setupDataConnection = useCallback((conn: DataConnection) => {
+    resetChatCryptoState();
+    dataConnRef.current = conn;
+    setConversationPeerId(conn.peer);
+    if (myId) {
+      setConversationPeers(myId, conn.peer);
+    }
+
+    const handleOpen = () => {
+      setIsDataConnected(true);
+      void ensureChatCryptoSession(conn).catch((err) => {
+        console.error('Unable to start chat crypto session:', err);
+        setIsChatSecure(false);
+      });
+    };
+
+    const handleClose = () => {
+      if (dataConnRef.current === conn) {
+        dataConnRef.current = null;
+        resetDataConnection();
+      }
+    };
+
+    conn.on('open', handleOpen);
+    conn.on('data', (data: unknown) => {
+      void handleDataMessage(data);
+    });
+    conn.on('close', handleClose);
+    conn.on('error', (err) => {
+      console.error('Data connection error:', err);
+      handleClose();
+    });
+
+    if (conn.open) {
+      handleOpen();
+    }
+  }, [ensureChatCryptoSession, handleDataMessage, myId, resetChatCryptoState, resetDataConnection, setConversationPeers]);
 
   // Initialize local stream
   useEffect(() => {
@@ -290,6 +439,7 @@ export default function CallPage() {
         setInboundVideoBytes(hasVideo ? videoBytes : null);
         setInboundAudioBytes(hasAudio ? audioBytes : null);
       } catch {
+        // Stats may be temporarily unavailable while the peer connection is changing state.
       }
     }, 1000);
 
@@ -321,6 +471,7 @@ export default function CallPage() {
           dataConnRef.current?.close();
           callRef.current = null;
           dataConnRef.current = null;
+          resetDataConnection();
           attachPeerConnectionDebug(null);
         });
 
@@ -335,25 +486,10 @@ export default function CallPage() {
     if (!dataConnRef.current) {
       const conn = connectToPeer(remotePeerId);
       if (conn) {
-        dataConnRef.current = conn;
-        conn.on('open', () => {
-          console.log('Data connection opened');
-        });
-        conn.on('data', (data: unknown) => {
-          if (isQualityChangeMessage(data)) {
-            const quality = data.quality;
-            console.log('Received quality change request:', quality);
-            // Only update if different to avoid loops
-            if (quality.label !== currentQualityRef.current.label) {
-                changeQuality(quality);
-            }
-          } else if (isHeartMessage(data)) {
-            receiveHeart(data.heart);
-          }
-        });
+        setupDataConnection(conn);
       }
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, changeQuality]);
+  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, attachPeerConnectionDebug, resetDataConnection, setupDataConnection]);
 
   // 2. Callee logic - Register listeners (Signaling)
   // Register listeners immediately when Peer is ready, do NOT wait for stream
@@ -369,6 +505,7 @@ export default function CallPage() {
         call.close();
         return;
       }
+      setConversationPeerId(call.peer);
       setIncomingCall(call);
       setConnectionStatus('connecting');
     });
@@ -379,20 +516,9 @@ export default function CallPage() {
         conn.close();
         return;
       }
-      dataConnRef.current = conn;
-      conn.on('data', (data: unknown) => {
-        if (isQualityChangeMessage(data)) {
-          const quality = data.quality;
-          console.log('Received quality change request:', quality);
-          if (quality.label !== currentQualityRef.current.label) {
-            changeQuality(quality);
-          }
-        } else if (isHeartMessage(data)) {
-          receiveHeart(data.heart);
-        }
-      });
+      setupDataConnection(conn);
     });
-  }, [isPeerReady, remotePeerId, onIncomingCall, onIncomingData, changeQuality]);
+  }, [isPeerReady, remotePeerId, onIncomingCall, onIncomingData, setupDataConnection]);
 
   // 3. Callee logic - Handle incoming call events
   useEffect(() => {
@@ -413,6 +539,7 @@ export default function CallPage() {
       callRef.current = null;
       dataConnRef.current = null;
       setIncomingCall(null);
+      resetDataConnection();
       attachPeerConnectionDebug(null);
     });
 
@@ -424,7 +551,7 @@ export default function CallPage() {
     return () => {
       // Cleanup listeners if needed? PeerJS handles this on close
     };
-  }, [incomingCall]);
+  }, [incomingCall, attachPeerConnectionDebug, resetDataConnection]);
 
   // 4. Callee logic - Answer call (Stream handling)
   // Answer call when stream becomes available
@@ -436,7 +563,39 @@ export default function CallPage() {
     incomingCall.answer(stream);
     callRef.current = incomingCall;
     attachPeerConnectionDebug(incomingCall.peerConnection);
-  }, [incomingCall, stream]);
+  }, [incomingCall, stream, attachPeerConnectionDebug]);
+
+  const handleSendChat = useCallback(async ({ text, image }: { text?: string; image?: ChatImageAttachment }) => {
+    if (!myId) {
+      throw new Error('Peer 尚未就绪');
+    }
+
+    const message = createLocalMessage({ myPeerId: myId, text, image });
+    if (!message) {
+      throw new Error('没有可发送的内容');
+    }
+
+    const conn = dataConnRef.current;
+    if (!conn?.open) {
+      updateMessageStatus(message.id, 'failed');
+      throw new Error('聊天连接尚未建立');
+    }
+
+    const session = await ensureChatCryptoSession(conn);
+    if (!session.isReady()) {
+      updateMessageStatus(message.id, 'failed');
+      throw new Error('加密通道尚未就绪');
+    }
+
+    try {
+      const encrypted = await session.encrypt(createWireChatMessage(message, myId));
+      conn.send(encrypted);
+      updateMessageStatus(message.id, 'sent');
+    } catch (err) {
+      updateMessageStatus(message.id, 'failed');
+      throw err instanceof Error ? err : new Error('发送失败');
+    }
+  }, [createLocalMessage, ensureChatCryptoSession, myId, updateMessageStatus]);
 
   const copyLink = () => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
@@ -457,6 +616,11 @@ export default function CallPage() {
   const endCall = () => {
     if (callRef.current) {
       callRef.current.close();
+    }
+    if (dataConnRef.current) {
+      dataConnRef.current.close();
+      dataConnRef.current = null;
+      resetDataConnection();
     }
     navigate('/');
   };
@@ -555,12 +719,18 @@ export default function CallPage() {
         )}
       </div>
 
-
+      <ChatPanel
+        isOpen={isChatOpen}
+        isConnected={isDataConnected}
+        isSecure={isChatSecure}
+        onClose={() => setIsChatOpen(false)}
+        onSend={handleSendChat}
+      />
 
       {/* Controls Bar */}
       <div className={cn(
         "absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-6 px-8 py-4 bg-gray-800/90 backdrop-blur-sm rounded-full shadow-2xl border border-gray-700 z-50 transition-all duration-300 ease-in-out",
-        showControls ? "translate-y-0 opacity-100" : "translate-y-24 opacity-0 pointer-events-none"
+        showControls || isChatOpen ? "translate-y-0 opacity-100" : "translate-y-24 opacity-0 pointer-events-none"
       )}>
         <Button
           variant={isAudioEnabled ? 'secondary' : 'danger'}
@@ -598,7 +768,22 @@ export default function CallPage() {
             onVideoFitModeChange={setVideoFitMode}
             disabled={!stream}
           />
-          
+
+          <Button
+            variant={isChatOpen ? 'primary' : 'secondary'}
+            size="icon"
+            className="relative h-12 w-12 rounded-full bg-gray-700 hover:bg-gray-600"
+            onClick={() => setIsChatOpen((value) => !value)}
+            title="聊天"
+          >
+            <MessageCircle className="h-5 w-5 text-white" />
+            {unreadChatCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+                {unreadChatCount > 9 ? '9+' : unreadChatCount}
+              </span>
+            )}
+          </Button>
+
           <Button
             variant="danger"
             size="icon"

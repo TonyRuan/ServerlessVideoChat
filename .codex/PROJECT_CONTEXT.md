@@ -13,7 +13,7 @@
 - React 18 + TypeScript + Vite
 - React Router DOM v7
 - PeerJS + WebRTC
-- Zustand，用于爱心互动事件状态
+- Zustand，用于爱心互动事件状态和本地聊天状态
 - Tailwind CSS + `clsx` / `tailwind-merge`
 - Lucide React 图标
 
@@ -86,6 +86,7 @@
 - ICE / PeerConnection / inbound stats 诊断展示
 - 音频、视频、画质、显示模式、挂断等控制
 - 爱心和画质消息的数据通道同步
+- 加密图文聊天的数据通道同步与本地历史展示
 
 该文件复杂度较高。后续大改时优先考虑拆分为更小的 hook 或组件，但不要在无明确目标时做大范围重构。
 
@@ -96,9 +97,15 @@ DataConnection 当前承载两类消息：
 ```ts
 { type: 'HEART', heart: HeartData }
 { type: 'QUALITY_CHANGE', quality: VideoQuality }
+{ type: 'CHAT_CRYPTO_KEY', version: 1, publicKey: JsonWebKey }
+{ type: 'CHAT_CIPHER', version: 1, iv: string, data: string }
 ```
 
 爱心状态在 `src/stores/heartStore.ts` 中保存为最后一次 incoming/outgoing 事件，不是队列。极高频事件存在被覆盖的风险，连接未 open 前触发的 outgoing heart 也不会补发。
+
+聊天消息先在 DataConnection 上交换临时 ECDH P-256 公钥，再用派生出的 AES-GCM key 加密 `{ type: 'CHAT_MESSAGE', message }` payload 后发送。WebRTC DataChannel 自身已有 DTLS 传输加密；聊天层额外做应用层加密。当前没有独立身份认证，密钥握手建立在既有 PeerJS/WebRTC 连接之上。
+
+聊天记录默认存浏览器本地 `localStorage`，key 命名空间为 `serverlessVideoChat:chat:v1:<conversationId>`，会话 ID 由双方 Peer ID 排序后拼接。每个会话最多保留 200 条消息，序列化体积目标上限为 1MB；图片按 data URL 存储，单张发送限制为 512KB，接收端也会校验图片 MIME、原始大小和 data URL 长度，支持 JPG、PNG、WebP。
 
 ## 组件职责
 
@@ -106,6 +113,11 @@ DataConnection 当前承载两类消息：
 - `src/components/Input.tsx`：基础输入框
 - `src/components/SettingsMenu.tsx`：画质和视频填充模式菜单
 - `src/components/ClickHeart.tsx`：全局双击爱心动画层
+- `src/components/ChatPanel.tsx`：通话页图文聊天覆盖层，包含本地历史、图片预览、加密状态和发送输入
+- `src/stores/chatStore.ts`：聊天会话、草稿、未读数、发送状态和 localStorage 持久化
+- `src/lib/chatCrypto.ts`：聊天应用层 ECDH + AES-GCM 加密
+- `src/lib/chatProtocol.ts`：聊天 wire payload 转换和校验
+- `src/lib/chatStorage.ts`：聊天记录本地存储、会话 ID、历史裁剪
 
 ## 部署边界
 
@@ -138,18 +150,17 @@ Cloudflare Pages 项目：
 
 ## 当前质量状态
 
-最近一次只读理解时的验证结果：
+最近一次功能验证结果（2026-06-22）：
 
+- `npm test -- --run`：通过
 - `npm run check`：通过
 - `npm run build`：通过
-- `npm run lint`：不通过
+- `npm run lint`：通过
+- `git diff --check`：通过
+- `npx --yes wrangler pages deploy dist --project-name serverlessvideochat --branch main`：通过，部署地址 `https://436d9eb8.serverlessvideochat.pages.dev`
+- `https://chat.uavserver.cn`：HTTP 200，加载同一套 `assets/index-CpV5yGm-.js` / `assets/index-jUfWsRYq.css`，未发现 Trae Solo 标识
 
-已知 lint 问题包括：
-
-- `src/components/ClickHeart.tsx` 有空接口
-- `src/components/ClickHeart.tsx` 使用了 `@ts-ignore`
-- `src/pages/CallPage.tsx` 有空 catch block
-- `src/pages/CallPage.tsx` 有多个 React hook dependency warning
+当前测试重点覆盖聊天本地存储裁剪、聊天 wire payload 校验，以及 ECDH + AES-GCM 加密往返。
 
 ## 已知不一致和风险
 
@@ -159,6 +170,8 @@ Cloudflare Pages 项目：
 - `CallPage` 左上角诊断信息常驻，偏调试 UI。
 - 通话页本地 PIP 在摄像头关闭时没有像首页一样显示 `VideoOff` 占位。
 - DataConnection 没有 close/error/reconnect 状态处理，爱心和画质同步可能静默失效。
+- 聊天图片通过同一条 DataConnection 发送；虽然有 512KB 限制，但弱网或连续图片仍可能延迟 HEART/QUALITY_CHANGE 这类控制消息。
+- 聊天本地历史存储在浏览器 localStorage 中，不是跨设备同步，也不是本地加密数据库。
 - TURN 相关 `VITE_*` 变量会进入前端构建产物，不能当作服务端秘密，只能作为客户端可见凭证管理。
 
 ## 维护要求
