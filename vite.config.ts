@@ -3,12 +3,9 @@ import react from '@vitejs/plugin-react'
 import tsconfigPaths from "vite-tsconfig-paths";
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-  const isDev = mode === 'development';
-  const isCloudflarePages = Boolean(process.env.CF_PAGES);
-
+export default defineConfig(() => {
   return {
-    base: isDev || isCloudflarePages ? '/' : '/ServerlessVideoChat/',
+    base: '/',
     build: {
       sourcemap: 'hidden',
     },

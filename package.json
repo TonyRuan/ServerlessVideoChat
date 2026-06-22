@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:github": "tsc -b && vite build --base=/ServerlessVideoChat/",
     "lint": "eslint .",
     "preview": "vite preview",
     "check": "tsc -b --noEmit",
     "test": "vitest run",
-    "predeploy": "npm run build",
+    "predeploy": "npm run build:github",
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {

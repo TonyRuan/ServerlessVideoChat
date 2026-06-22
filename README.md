@@ -91,12 +91,12 @@ public/
 
 ### 方式二：部署到 GitHub Pages
 
-1. 确保 `vite.config.ts` 中的 `base` 路径配置正确（当前代码已做自动兼容，非 Cloudflare 环境默认保留子路径 `base`）。
+1. GitHub Pages 需要仓库子路径构建；项目已通过 `npm run build:github` 显式使用 `/ServerlessVideoChat/` base path。
 2. 运行部署脚本：
    ```bash
    npm run deploy
    ```
-   *该脚本会自动执行构建，并将 `dist` 目录推送到 `gh-pages` 分支。*
+   *该脚本会先执行 GitHub Pages 专用构建，并将 `dist` 目录推送到 `gh-pages` 分支。*
 
 ---
 

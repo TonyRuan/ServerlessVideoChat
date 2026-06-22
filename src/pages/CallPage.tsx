@@ -5,6 +5,7 @@ import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { ChatPanel } from '../components/ChatPanel';
+import { NetworkDiagnosticsPanel } from '../components/NetworkDiagnosticsPanel';
 import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { useHeartStore, type HeartData } from '../stores/heartStore';
@@ -17,6 +18,11 @@ import {
   type ChatCryptoSession,
 } from '../lib/chatCrypto';
 import { createWireChatMessage, isWireChatPayload } from '../lib/chatProtocol';
+import {
+  getCallConnectionIssue,
+  getEffectiveConnectionStatus,
+  type CallConnectionStatus,
+} from '../lib/callConnectivity';
 import { cn } from '../lib/utils';
 
 export default function CallPage() {
@@ -38,7 +44,7 @@ export default function CallPage() {
   const { myId, isPeerReady, error: peerError, callPeer, connectToPeer, onIncomingCall, onIncomingData } = usePeer();
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<'initializing' | 'waiting' | 'connecting' | 'connected' | 'disconnected'>('initializing');
+  const [connectionStatus, setConnectionStatus] = useState<CallConnectionStatus>('initializing');
   const [incomingCall, setIncomingCall] = useState<MediaConnection | null>(null);
   const [copied, setCopied] = useState(false);
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
@@ -625,6 +631,17 @@ export default function CallPage() {
     navigate('/');
   };
 
+  const effectiveConnectionStatus = getEffectiveConnectionStatus(
+    connectionStatus,
+    rtcIceState,
+    rtcConnectionState
+  );
+  const callConnectionIssue = getCallConnectionIssue(
+    rtcIceState,
+    rtcConnectionState,
+    Boolean(remoteStream)
+  );
+
   if (streamError || peerError) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
@@ -661,6 +678,14 @@ export default function CallPage() {
                 </div>
               </div>
             )}
+            {callConnectionIssue && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-950/70 p-4">
+                <div className="max-w-md rounded-xl border border-amber-500/40 bg-gray-900/90 px-4 py-3 text-center text-sm text-amber-100 shadow-xl">
+                  <p className="font-semibold text-amber-300">连接已失败</p>
+                  <p className="mt-2">{callConnectionIssue}</p>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <div className="text-center space-y-4 p-4">
@@ -668,8 +693,8 @@ export default function CallPage() {
               <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
             </div>
             <h2 className="text-2xl font-semibold">
-              {connectionStatus === 'waiting' ? '等待对方加入...' : 
-               connectionStatus === 'connecting' ? '连接中...' : 
+              {connectionStatus === 'waiting' ? '等待对方加入...' :
+               connectionStatus === 'connecting' ? '连接中...' :
                connectionStatus === 'connected' ? '已连接' :
                connectionStatus === 'disconnected' ? '连接已断开' :
                '初始化中...'}
@@ -723,6 +748,7 @@ export default function CallPage() {
         isOpen={isChatOpen}
         isConnected={isDataConnected}
         isSecure={isChatSecure}
+        connectionIssue={callConnectionIssue}
         onClose={() => setIsChatOpen(false)}
         onSend={handleSendChat}
       />
@@ -795,33 +821,26 @@ export default function CallPage() {
           </Button>
       </div>
       
-      {/* Connection Status Badge */}
-      <div className="absolute top-4 left-4 px-3 py-2 bg-gray-800/80 backdrop-blur rounded-xl text-xs font-medium text-gray-300 border border-gray-700">
-        <div className="flex items-center gap-2">
-        <span className={cn(
-          "w-2 h-2 rounded-full",
-          connectionStatus === 'connected' ? "bg-green-500" :
-          connectionStatus === 'disconnected' ? "bg-red-500" :
-          "bg-yellow-500 animate-pulse"
-        )} />
-        {connectionStatus.charAt(0).toUpperCase() + connectionStatus.slice(1)}
-        </div>
-        <div className="mt-1 text-[11px] text-gray-400">
-          ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
-        </div>
-        <div className="mt-1 text-[11px] text-gray-400">
-          V: {remoteStream ? remoteStream.getVideoTracks().length : 0} / A: {remoteStream ? remoteStream.getAudioTracks().length : 0}
-          {' '}· Size: {remoteVideoWidth}x{remoteVideoHeight} · RS: {remoteVideoReadyState} · {remoteVideoPaused ? 'paused' : 'playing'}
-        </div>
-        <div className="mt-1 text-[11px] text-gray-400">
-          In: video {inboundVideoBytes ?? '-'} / audio {inboundAudioBytes ?? '-'}
-        </div>
-        {remotePlayError && (
-          <div className="mt-1 text-[11px] text-amber-400">
-            Play: {remotePlayError}
-          </div>
-        )}
-      </div>
+      <NetworkDiagnosticsPanel
+        effectiveConnectionStatus={effectiveConnectionStatus}
+        rtcIceState={rtcIceState}
+        rtcConnectionState={rtcConnectionState}
+        remoteTrackCounts={{
+          video: remoteStream ? remoteStream.getVideoTracks().length : 0,
+          audio: remoteStream ? remoteStream.getAudioTracks().length : 0,
+        }}
+        remoteVideo={{
+          width: remoteVideoWidth,
+          height: remoteVideoHeight,
+          readyState: remoteVideoReadyState,
+          paused: remoteVideoPaused,
+        }}
+        inbound={{
+          videoBytes: inboundVideoBytes,
+          audioBytes: inboundAudioBytes,
+        }}
+        remotePlayError={remotePlayError}
+      />
     </div>
   );
 }
