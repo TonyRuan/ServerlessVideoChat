@@ -57,6 +57,26 @@ describe('chatProtocol', () => {
     ).toBe(false);
   });
 
+  it('accepts GIF image payloads within the accepted chat limits', () => {
+    expect(
+      isWireChatPayload({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: 'gif-1',
+          from: 'p',
+          kind: 'image',
+          createdAt: 1,
+          image: {
+            dataUrl: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+            mimeType: 'image/gif',
+            name: 'animated.gif',
+            size: MAX_CHAT_IMAGE_BYTES,
+          },
+        },
+      })
+    ).toBe(true);
+  });
+
   it('rejects image payloads over the accepted chat limits', () => {
     const oversizedImage = {
       type: 'CHAT_MESSAGE',

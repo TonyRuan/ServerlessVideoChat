@@ -8,6 +8,7 @@ import {
   ACCEPTED_CHAT_IMAGE_TYPES,
   getImageFileFromClipboardItems,
   getImageFileFromFiles,
+  isAcceptedChatImageType,
 } from '../lib/chatAttachments';
 import {
   clampChatPanelPosition,
@@ -18,6 +19,8 @@ import {
 } from '../lib/chatPanelPosition';
 
 const DESKTOP_MIN_WIDTH = 768;
+const BYTES_PER_MIB = 1024 * 1024;
+const MAX_CHAT_IMAGE_SIZE_MB = Math.floor(MAX_CHAT_IMAGE_BYTES / BYTES_PER_MIB);
 
 interface ChatPanelProps {
   isOpen: boolean;
@@ -41,15 +44,23 @@ const getFallbackImageName = (file: File) => {
   return `clipboard-image.${extension}`;
 };
 
+const formatImageSize = (bytes: number) => {
+  if (bytes >= BYTES_PER_MIB) {
+    return `${(bytes / BYTES_PER_MIB).toFixed(bytes >= 10 * BYTES_PER_MIB ? 0 : 1)} MB`;
+  }
+
+  return `${Math.ceil(bytes / 1024)} KB`;
+};
+
 const readImageAttachment = (file: File): Promise<ChatImageAttachment> => {
   return new Promise((resolve, reject) => {
-    if (!ACCEPTED_CHAT_IMAGE_TYPES.includes(file.type as (typeof ACCEPTED_CHAT_IMAGE_TYPES)[number])) {
-      reject(new Error('仅支持 JPG、PNG 或 WebP 图片'));
+    if (!isAcceptedChatImageType(file.type)) {
+      reject(new Error('仅支持 JPG、PNG、WebP 或 GIF 图片'));
       return;
     }
 
     if (file.size > MAX_CHAT_IMAGE_BYTES) {
-      reject(new Error(`图片不能超过 ${Math.floor(MAX_CHAT_IMAGE_BYTES / 1024)}KB`));
+      reject(new Error(`图片不能超过 ${MAX_CHAT_IMAGE_SIZE_MB}MB`));
       return;
     }
 
@@ -350,7 +361,7 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
               </button>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-gray-200">{selectedImage.name}</p>
-                <p className="text-[11px] text-gray-500">{Math.ceil(selectedImage.size / 1024)} KB</p>
+                <p className="text-[11px] text-gray-500">{formatImageSize(selectedImage.size)}</p>
               </div>
               <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full text-gray-300" onClick={() => setSelectedImage(null)}>
                 <X className="h-3.5 w-3.5" />

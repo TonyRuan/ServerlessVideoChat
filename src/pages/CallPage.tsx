@@ -21,8 +21,24 @@ import { createWireChatMessage, isWireChatPayload } from '../lib/chatProtocol';
 import {
   getCallConnectionIssue,
   getEffectiveConnectionStatus,
+  isPeerTransportFailed,
   type CallConnectionStatus,
 } from '../lib/callConnectivity';
+import {
+  extractConnectionTransferStats,
+  extractInboundVideoTransferStats,
+  extractOutboundVideoTransferStats,
+  type ConnectionTransferSample,
+  type OutboundVideoTransferSample,
+  type TurnUsage,
+  type VideoTransferSample,
+} from '../lib/mediaStats';
+import { preferVideoCodecsInSdp } from '../lib/videoCodecPreference';
+import {
+  deriveTurnFallbackAction,
+  turnFallbackStatusLabel,
+  type TurnFallbackStatus,
+} from '../lib/turnFallback';
 import { cn } from '../lib/utils';
 
 export default function CallPage() {
@@ -41,7 +57,18 @@ export default function CallPage() {
     currentQuality,
     changeQuality
   } = useMediaStream();
-  const { myId, isPeerReady, error: peerError, callPeer, connectToPeer, onIncomingCall, onIncomingData } = usePeer();
+  const {
+    myId,
+    isPeerReady,
+    error: peerError,
+    callPeer,
+    connectToPeer,
+    onIncomingCall,
+    onIncomingData,
+    turnMode,
+    hasTurnConfig,
+    enableTurnFallback,
+  } = usePeer();
   
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<CallConnectionStatus>('initializing');
@@ -56,18 +83,37 @@ export default function CallPage() {
   const [remoteVideoReadyState, setRemoteVideoReadyState] = useState(0);
   const [remoteVideoPaused, setRemoteVideoPaused] = useState(true);
   const [inboundVideoBytes, setInboundVideoBytes] = useState<number | null>(null);
+  const [inboundVideoBitrateKbps, setInboundVideoBitrateKbps] = useState<number | null>(null);
+  const [inboundVideoCodec, setInboundVideoCodec] = useState<string | null>(null);
+  const [outboundVideoBytes, setOutboundVideoBytes] = useState<number | null>(null);
+  const [outboundVideoBitrateKbps, setOutboundVideoBitrateKbps] = useState<number | null>(null);
+  const [outboundVideoCodec, setOutboundVideoCodec] = useState<string | null>(null);
   const [inboundAudioBytes, setInboundAudioBytes] = useState<number | null>(null);
+  const [connectionUplinkKbps, setConnectionUplinkKbps] = useState<number | null>(null);
+  const [connectionDownlinkKbps, setConnectionDownlinkKbps] = useState<number | null>(null);
+  const [turnUsage, setTurnUsage] = useState<TurnUsage>({
+    isUsingTurn: null,
+    localCandidateType: null,
+    remoteCandidateType: null,
+  });
   const [remotePlayError, setRemotePlayError] = useState<string>('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isDataConnected, setIsDataConnected] = useState(false);
   const [isChatSecure, setIsChatSecure] = useState(false);
   const [conversationPeerId, setConversationPeerId] = useState<string | null>(remotePeerId ?? null);
+  const [turnFallbackAttempted, setTurnFallbackAttempted] = useState(false);
+  const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const callRef = useRef<MediaConnection | null>(null);
   const dataConnRef = useRef<DataConnection | null>(null);
+  const connectionGenerationRef = useRef(0);
   const currentQualityRef = useRef(currentQuality);
+  const inboundVideoSampleRef = useRef<VideoTransferSample | null>(null);
+  const outboundVideoSampleRef = useRef<OutboundVideoTransferSample | null>(null);
+  const connectionSampleRef = useRef<ConnectionTransferSample | null>(null);
   const pcCleanupRef = useRef<(() => void) | null>(null);
   const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
@@ -250,7 +296,43 @@ export default function CallPage() {
     setIsChatSecure(false);
   }, [resetChatCryptoState]);
 
-  const setupDataConnection = useCallback((conn: DataConnection) => {
+  const resetConnectionStats = useCallback(() => {
+    inboundVideoSampleRef.current = null;
+    outboundVideoSampleRef.current = null;
+    connectionSampleRef.current = null;
+    setInboundVideoBytes(null);
+    setInboundVideoBitrateKbps(null);
+    setInboundVideoCodec(null);
+    setOutboundVideoBytes(null);
+    setOutboundVideoBitrateKbps(null);
+    setOutboundVideoCodec(null);
+    setInboundAudioBytes(null);
+    setConnectionUplinkKbps(null);
+    setConnectionDownlinkKbps(null);
+    setTurnUsage({
+      isUsingTurn: null,
+      localCandidateType: null,
+      remoteCandidateType: null,
+    });
+  }, []);
+
+  const closeActiveConnections = useCallback(() => {
+    connectionGenerationRef.current += 1;
+    pcCleanupRef.current?.();
+    pcCleanupRef.current = null;
+    callRef.current?.close();
+    dataConnRef.current?.close();
+    callRef.current = null;
+    dataConnRef.current = null;
+    setIncomingCall(null);
+    setRemoteStream(null);
+    setRtcIceState('');
+    setRtcConnectionState('');
+    resetConnectionStats();
+    resetDataConnection();
+  }, [resetConnectionStats, resetDataConnection]);
+
+  const setupDataConnection = useCallback((conn: DataConnection, generation = connectionGenerationRef.current) => {
     resetChatCryptoState();
     dataConnRef.current = conn;
     setConversationPeerId(conn.peer);
@@ -259,6 +341,7 @@ export default function CallPage() {
     }
 
     const handleOpen = () => {
+      if (connectionGenerationRef.current !== generation) return;
       setIsDataConnected(true);
       void ensureChatCryptoSession(conn).catch((err) => {
         console.error('Unable to start chat crypto session:', err);
@@ -267,6 +350,7 @@ export default function CallPage() {
     };
 
     const handleClose = () => {
+      if (connectionGenerationRef.current !== generation) return;
       if (dataConnRef.current === conn) {
         dataConnRef.current = null;
         resetDataConnection();
@@ -275,6 +359,7 @@ export default function CallPage() {
 
     conn.on('open', handleOpen);
     conn.on('data', (data: unknown) => {
+      if (connectionGenerationRef.current !== generation) return;
       void handleDataMessage(data);
     });
     conn.on('close', handleClose);
@@ -337,6 +422,48 @@ export default function CallPage() {
 
     navigate(`/call/${extractedPeerId}`, { replace: true });
   }, [remotePeerId, myId, location.search, location.hash, navigate]);
+
+  useEffect(() => {
+    const action = deriveTurnFallbackAction({
+      role: remotePeerId ? 'caller' : 'callee',
+      turnMode,
+      hasTurnConfig,
+      attempted: turnFallbackAttempted,
+      iceState: rtcIceState,
+      peerConnectionState: rtcConnectionState,
+    });
+    if (action === 'none') return;
+
+    if (!enableTurnFallback()) return;
+
+    setTurnFallbackAttempted(true);
+    closeActiveConnections();
+
+    if (action === 'retry') {
+      setTurnFallbackStatus('retrying');
+      setConnectionStatus('connecting');
+      setReconnectAttempt((attempt) => attempt + 1);
+    } else {
+      setTurnFallbackStatus('waiting');
+      setConnectionStatus('waiting');
+    }
+  }, [
+    closeActiveConnections,
+    enableTurnFallback,
+    hasTurnConfig,
+    remotePeerId,
+    rtcConnectionState,
+    rtcIceState,
+    turnFallbackAttempted,
+    turnMode,
+  ]);
+
+  useEffect(() => {
+    if (turnFallbackStatus === 'idle') return;
+    if (connectionStatus !== 'connected') return;
+    if (isPeerTransportFailed(rtcIceState, rtcConnectionState)) return;
+    setTurnFallbackStatus('active');
+  }, [connectionStatus, rtcConnectionState, rtcIceState, turnFallbackStatus]);
 
   // Handle local video stream
   useEffect(() => {
@@ -419,9 +546,13 @@ export default function CallPage() {
 
       try {
         const stats = await pc.getStats();
-        let videoBytes = 0;
+        const videoTransfer = extractInboundVideoTransferStats(stats, inboundVideoSampleRef.current);
+        const outboundVideoTransfer = extractOutboundVideoTransferStats(stats, outboundVideoSampleRef.current);
+        const connectionTransfer = extractConnectionTransferStats(stats, connectionSampleRef.current);
+        inboundVideoSampleRef.current = videoTransfer.sample;
+        outboundVideoSampleRef.current = outboundVideoTransfer.sample;
+        connectionSampleRef.current = connectionTransfer.sample;
         let audioBytes = 0;
-        let hasVideo = false;
         let hasAudio = false;
 
         stats.forEach((report) => {
@@ -433,17 +564,22 @@ export default function CallPage() {
           };
           if (r.type !== 'inbound-rtp') return;
           const kind = r.kind ?? r.mediaType;
-          if (kind === 'video') {
-            hasVideo = true;
-            videoBytes += r.bytesReceived ?? 0;
-          } else if (kind === 'audio') {
+          if (kind === 'audio') {
             hasAudio = true;
             audioBytes += r.bytesReceived ?? 0;
           }
         });
 
-        setInboundVideoBytes(hasVideo ? videoBytes : null);
+        setInboundVideoBytes(videoTransfer.metrics.bytesReceived);
+        setInboundVideoBitrateKbps(videoTransfer.metrics.bitrateKbps);
+        setInboundVideoCodec(videoTransfer.metrics.codec);
+        setOutboundVideoBytes(outboundVideoTransfer.metrics.bytesSent);
+        setOutboundVideoBitrateKbps(outboundVideoTransfer.metrics.bitrateKbps);
+        setOutboundVideoCodec(outboundVideoTransfer.metrics.codec);
         setInboundAudioBytes(hasAudio ? audioBytes : null);
+        setConnectionUplinkKbps(connectionTransfer.metrics.uplinkKbps);
+        setConnectionDownlinkKbps(connectionTransfer.metrics.downlinkKbps);
+        setTurnUsage(connectionTransfer.metrics.turnUsage);
       } catch {
         // Stats may be temporarily unavailable while the peer connection is changing state.
       }
@@ -461,17 +597,20 @@ export default function CallPage() {
     // Only initiate call if not already called
     if (!callRef.current) {
       setConnectionStatus('connecting');
+      const generation = connectionGenerationRef.current;
       const call = callPeer(remotePeerId, stream);
-      
+
       if (call) {
         callRef.current = call;
         attachPeerConnectionDebug(call.peerConnection);
         call.on('stream', (remoteStream) => {
+          if (connectionGenerationRef.current !== generation) return;
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
         });
-        
+
         call.on('close', () => {
+          if (connectionGenerationRef.current !== generation) return;
           setConnectionStatus('disconnected');
           setRemoteStream(null);
           dataConnRef.current?.close();
@@ -482,6 +621,7 @@ export default function CallPage() {
         });
 
         call.on('error', (err) => {
+            if (connectionGenerationRef.current !== generation) return;
             console.error('Call error:', err);
             setConnectionStatus('disconnected');
         });
@@ -492,10 +632,10 @@ export default function CallPage() {
     if (!dataConnRef.current) {
       const conn = connectToPeer(remotePeerId);
       if (conn) {
-        setupDataConnection(conn);
+        setupDataConnection(conn, connectionGenerationRef.current);
       }
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, attachPeerConnectionDebug, resetDataConnection, setupDataConnection]);
+  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, attachPeerConnectionDebug, resetDataConnection, setupDataConnection, reconnectAttempt]);
 
   // 2. Callee logic - Register listeners (Signaling)
   // Register listeners immediately when Peer is ready, do NOT wait for stream
@@ -522,23 +662,26 @@ export default function CallPage() {
         conn.close();
         return;
       }
-      setupDataConnection(conn);
+      setupDataConnection(conn, connectionGenerationRef.current);
     });
   }, [isPeerReady, remotePeerId, onIncomingCall, onIncomingData, setupDataConnection]);
 
   // 3. Callee logic - Handle incoming call events
   useEffect(() => {
     if (!incomingCall) return;
+    const generation = connectionGenerationRef.current;
 
     // Register listeners immediately
     attachPeerConnectionDebug(incomingCall.peerConnection);
     incomingCall.on('stream', (remoteStream) => {
+      if (connectionGenerationRef.current !== generation) return;
       console.log('Received remote stream');
       setRemoteStream(remoteStream);
       setConnectionStatus('connected');
     });
 
     incomingCall.on('close', () => {
+      if (connectionGenerationRef.current !== generation) return;
       setConnectionStatus('disconnected');
       setRemoteStream(null);
       dataConnRef.current?.close();
@@ -550,6 +693,7 @@ export default function CallPage() {
     });
 
     incomingCall.on('error', (err) => {
+      if (connectionGenerationRef.current !== generation) return;
       console.error('Incoming call error:', err);
       setConnectionStatus('disconnected');
     });
@@ -566,7 +710,9 @@ export default function CallPage() {
     if (callRef.current === incomingCall) return; // Already answered
 
     console.log('Answering incoming call with stream');
-    incomingCall.answer(stream);
+    incomingCall.answer(stream, {
+      sdpTransform: preferVideoCodecsInSdp,
+    });
     callRef.current = incomingCall;
     attachPeerConnectionDebug(incomingCall.peerConnection);
   }, [incomingCall, stream, attachPeerConnectionDebug]);
@@ -641,6 +787,8 @@ export default function CallPage() {
     rtcConnectionState,
     Boolean(remoteStream)
   );
+  const displayedCallConnectionIssue =
+    turnFallbackStatus === 'retrying' || turnFallbackStatus === 'waiting' ? null : callConnectionIssue;
 
   if (streamError || peerError) {
     return (
@@ -678,11 +826,11 @@ export default function CallPage() {
                 </div>
               </div>
             )}
-            {callConnectionIssue && (
+            {displayedCallConnectionIssue && (
               <div className="absolute inset-0 flex items-center justify-center bg-gray-950/70 p-4">
                 <div className="max-w-md rounded-xl border border-amber-500/40 bg-gray-900/90 px-4 py-3 text-center text-sm text-amber-100 shadow-xl">
                   <p className="font-semibold text-amber-300">连接已失败</p>
-                  <p className="mt-2">{callConnectionIssue}</p>
+                  <p className="mt-2">{displayedCallConnectionIssue}</p>
                 </div>
               </div>
             )}
@@ -706,7 +854,11 @@ export default function CallPage() {
               </p>
             )}
 
-            {rtcIceState === 'failed' && (
+            {turnFallbackStatus !== 'idle' && turnFallbackStatus !== 'active' && (
+              <p className="text-sm text-amber-300">{turnFallbackStatusLabel(turnFallbackStatus)}</p>
+            )}
+
+            {rtcIceState === 'failed' && turnFallbackStatus === 'idle' && (
               <p className="text-sm text-amber-400">
                 当前网络环境直连失败，通常需要配置 TURN 中继服务才能跨设备稳定通话。
               </p>
@@ -748,7 +900,7 @@ export default function CallPage() {
         isOpen={isChatOpen}
         isConnected={isDataConnected}
         isSecure={isChatSecure}
-        connectionIssue={callConnectionIssue}
+        connectionIssue={displayedCallConnectionIssue}
         onClose={() => setIsChatOpen(false)}
         onSend={handleSendChat}
       />
@@ -837,8 +989,21 @@ export default function CallPage() {
         }}
         inbound={{
           videoBytes: inboundVideoBytes,
+          videoBitrateKbps: inboundVideoBitrateKbps,
+          videoCodec: inboundVideoCodec,
           audioBytes: inboundAudioBytes,
         }}
+        outbound={{
+          videoBytes: outboundVideoBytes,
+          videoBitrateKbps: outboundVideoBitrateKbps,
+          videoCodec: outboundVideoCodec,
+        }}
+        connection={{
+          uplinkKbps: connectionUplinkKbps,
+          downlinkKbps: connectionDownlinkKbps,
+          turnUsage,
+        }}
+        turnFallbackStatus={turnFallbackStatus}
         remotePlayError={remotePlayError}
       />
     </div>

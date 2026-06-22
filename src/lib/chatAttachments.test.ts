@@ -20,7 +20,7 @@ describe('chatAttachments', () => {
     expect(selected).toBe(imageFile);
   });
 
-  it('ignores unsupported image types and empty clipboard file items', () => {
+  it('returns GIF files from clipboard items', () => {
     const gifFile = new File(['gif'], 'paste.gif', { type: 'image/gif' });
 
     const selected = getImageFileFromClipboardItems([
@@ -28,13 +28,14 @@ describe('chatAttachments', () => {
       makeItem('file', 'image/png', null),
     ]);
 
-    expect(selected).toBeNull();
+    expect(selected).toBe(gifFile);
   });
 
   it('accepts the same image types used by chat payload validation', () => {
     expect(isAcceptedChatImageType('image/jpeg')).toBe(true);
     expect(isAcceptedChatImageType('image/png')).toBe(true);
     expect(isAcceptedChatImageType('image/webp')).toBe(true);
-    expect(isAcceptedChatImageType('image/gif')).toBe(false);
+    expect(isAcceptedChatImageType('image/gif')).toBe(true);
+    expect(isAcceptedChatImageType('image/svg+xml')).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 export const CHAT_STORAGE_VERSION = 1;
 export const MAX_CHAT_MESSAGES = 200;
 export const MAX_CHAT_STORAGE_CHARS = 1_000_000;
-export const MAX_CHAT_IMAGE_BYTES = 512 * 1024;
-export const MAX_CHAT_IMAGE_DATA_URL_CHARS = 720_000;
+export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_CHAT_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4 + 128;
 
 export type ChatDirection = 'in' | 'out';
 export type ChatKind = 'text' | 'image' | 'mixed';
@@ -56,6 +56,21 @@ export function trimMessagesForStorage(messages: ChatMessage[]) {
   return trimmed;
 }
 
+function stripOversizedImageDataForStorage(message: ChatMessage): ChatMessage {
+  if (!message.image?.dataUrl) return message;
+
+  const singleMessageLength = JSON.stringify({ version: CHAT_STORAGE_VERSION, messages: [message] }).length;
+  if (singleMessageLength <= MAX_CHAT_STORAGE_CHARS) return message;
+
+  return {
+    ...message,
+    image: {
+      ...message.image,
+      dataUrl: '',
+    },
+  };
+}
+
 export function loadChatMessages(conversationId: string): ChatMessage[] {
   if (typeof localStorage === 'undefined') return [];
 
@@ -82,7 +97,8 @@ export function loadChatMessages(conversationId: string): ChatMessage[] {
 export function saveChatMessages(conversationId: string, messages: ChatMessage[]) {
   if (typeof localStorage === 'undefined') return;
 
-  const trimmed = trimMessagesForStorage(messages);
+  const storageMessages = messages.map(stripOversizedImageDataForStorage);
+  const trimmed = trimMessagesForStorage(storageMessages);
   const payload: PersistedChatHistory = {
     version: CHAT_STORAGE_VERSION,
     conversationId,

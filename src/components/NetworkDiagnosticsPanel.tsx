@@ -6,6 +6,14 @@ import {
   type NetworkDiagnosticSummary,
 } from '../lib/networkDiagnostics';
 import type { CallConnectionStatus } from '../lib/callConnectivity';
+import {
+  formatConnectionBitrate,
+  formatTurnUsage,
+  formatVideoBitrate,
+  formatVideoCodec,
+  type TurnUsage,
+} from '../lib/mediaStats';
+import { turnFallbackStatusLabel, type TurnFallbackStatus } from '../lib/turnFallback';
 import { cn } from '../lib/utils';
 
 interface NetworkDiagnosticsPanelProps {
@@ -24,8 +32,21 @@ interface NetworkDiagnosticsPanelProps {
   };
   inbound: {
     videoBytes: number | null;
+    videoBitrateKbps: number | null;
+    videoCodec: string | null;
     audioBytes: number | null;
   };
+  outbound: {
+    videoBytes: number | null;
+    videoBitrateKbps: number | null;
+    videoCodec: string | null;
+  };
+  connection: {
+    uplinkKbps: number | null;
+    downlinkKbps: number | null;
+    turnUsage: TurnUsage;
+  };
+  turnFallbackStatus: TurnFallbackStatus;
   remotePlayError: string;
 }
 
@@ -66,6 +87,9 @@ export function NetworkDiagnosticsPanel({
   remoteTrackCounts,
   remoteVideo,
   inbound,
+  outbound,
+  connection,
+  turnFallbackStatus,
   remotePlayError,
 }: NetworkDiagnosticsPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -135,7 +159,24 @@ export function NetworkDiagnosticsPanel({
         {remoteVideo.height} · RS: {remoteVideo.readyState} · {remoteVideo.paused ? 'paused' : 'playing'}
       </div>
       <div className="mt-1 text-[11px] text-gray-400">
-        In: video {inbound.videoBytes ?? '-'} / audio {inbound.audioBytes ?? '-'}
+        Codec: in {formatVideoCodec(inbound.videoCodec)} / out {formatVideoCodec(outbound.videoCodec)}
+      </div>
+      <div className="mt-1 text-[11px] text-gray-400">
+        Video: in {formatVideoBitrate(inbound.videoBitrateKbps)} / out{' '}
+        {formatVideoBitrate(outbound.videoBitrateKbps)}
+      </div>
+      <div className="mt-1 text-[11px] text-gray-400">
+        Up: {formatConnectionBitrate(connection.uplinkKbps)} · Down:{' '}
+        {formatConnectionBitrate(connection.downlinkKbps)} · TURN: {formatTurnUsage(connection.turnUsage)}
+      </div>
+      {turnFallbackStatus !== 'idle' && (
+        <div className="mt-1 text-[11px] text-amber-300">
+          TURN fallback: {turnFallbackStatusLabel(turnFallbackStatus)}
+        </div>
+      )}
+      <div className="mt-1 text-[11px] text-gray-400">
+        Bytes: inV {inbound.videoBytes ?? '-'} / outV {outbound.videoBytes ?? '-'} / inA{' '}
+        {inbound.audioBytes ?? '-'}
       </div>
       {remotePlayError && <div className="mt-1 text-[11px] text-amber-400">Play: {remotePlayError}</div>}
 

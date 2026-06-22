@@ -67,19 +67,23 @@
 - 暴露 `callPeer`、`connectToPeer`
 - 注册 incoming media call 和 data connection 回调
 
+视频 codec 优先级通过 PeerJS `sdpTransform` 重排 SDP `m=video` payload 顺序实现，当前偏好为 `AV1 > VP9 > H265 > 其他`。这只是协商偏好，不保证一定命中；最终 codec 仍取决于双方浏览器和设备实时编码支持。
+
 默认 STUN 包括 Google、Cloudflare、Twilio 等公开服务。TURN 通过以下环境变量注入：
 
 - `VITE_TURN_URLS`
 - `VITE_TURN_USERNAME`
 - `VITE_TURN_CREDENTIAL`
 
-纯 STUN 不保证复杂 NAT 下连通。跨网络、跨运营商稳定通话通常需要 TURN。
+默认连接只把 STUN 放入 PeerJS/WebRTC ICE 配置，即使构建产物里带有 `VITE_TURN_*`，初次连接也不会消耗阿里云 TURN。通话页检测到当前媒体连接 `ICE/PC failed` 后，会在不重建 Peer ID 的前提下把后续 PeerJS 连接配置切换为 TURN-enabled：caller 自动关闭旧 media/data 连接并重拨，callee 自动启用 TURN 并等待 caller 重连。页面 URL 仍支持调试参数：`?turn=1` 或 `#turn=1` 会从一开始就把 TURN 加入候选池但仍由浏览器 ICE 选择；`?turn=force` 或 `#turn=force` 会设置 `iceTransportPolicy: "relay"` 强制中继。
 
-2026-06-22 已在阿里云 ECS `39.108.122.44` 上安装 coturn：
+纯 STUN 不保证复杂 NAT 下连通。跨网络、跨运营商稳定通话通常需要 TURN；现在的策略是直连优先，失败后自动 fallback 到 TURN，避免本来可直连的机器默认消耗中继流量。
+
+2026-06-22 已在阿里云 ECS 上安装 coturn；公网地址保存在本地未跟踪配置中，不写入仓库：
 
 - 系统：Debian 11
 - 服务：`coturn.service`
-- TURN URL：`turn:39.108.122.44:3478?transport=udp`、`turn:39.108.122.44:3478?transport=tcp`
+- TURN URL 形态：`turn:<TURN_HOST>:3478?transport=udp`、`turn:<TURN_HOST>:3478?transport=tcp`
 - coturn realm：`chat.uavserver.cn`
 - relay 端口范围：`49160-49200`
 - TURN 用户名和密码保存在未跟踪的 `.env.local`，构建时通过 `VITE_TURN_*` 注入前端
@@ -101,7 +105,8 @@
 - DataConnection 建立
 - 本地视频 PIP 和远端视频全屏渲染
 - 远端自动播放失败后的静音重试
-- ICE / PeerConnection / inbound stats 诊断展示
+- ICE / PeerConnection / stats 诊断展示，包括入站/出站视频 codec、估算视频码率、连接上下行码率和 TURN 实际使用状态
+- 直连失败后的自动 TURN fallback，包含 caller 自动重拨、callee 等待重连和旧连接事件隔离
 - 左上角网络环境诊断入口，通过浏览器 ICE 候选采集估算当前网络是否可能需要 TURN
 - 音频、视频、画质、显示模式、挂断等控制
 - 爱心和画质消息的数据通道同步
@@ -111,7 +116,7 @@
 
 ## 数据通道消息
 
-DataConnection 当前承载两类消息：
+DataConnection 当前承载多类消息：
 
 ```ts
 { type: 'HEART', heart: HeartData }
@@ -124,9 +129,9 @@ DataConnection 当前承载两类消息：
 
 聊天消息先在 DataConnection 上交换临时 ECDH P-256 公钥，再用派生出的 AES-GCM key 加密 `{ type: 'CHAT_MESSAGE', message }` payload 后发送。WebRTC DataChannel 自身已有 DTLS 传输加密；聊天层额外做应用层加密。当前没有独立身份认证，密钥握手建立在既有 PeerJS/WebRTC 连接之上。
 
-聊天记录默认存浏览器本地 `localStorage`，key 命名空间为 `serverlessVideoChat:chat:v1:<conversationId>`，会话 ID 由双方 Peer ID 排序后拼接。每个会话最多保留 200 条消息，序列化体积目标上限为 1MB；图片按 data URL 存储，单张发送限制为 512KB，接收端也会校验图片 MIME、原始大小和 data URL 长度，支持 JPG、PNG、WebP。
+聊天记录默认存浏览器本地 `localStorage`，key 命名空间为 `serverlessVideoChat:chat:v1:<conversationId>`，会话 ID 由双方 Peer ID 排序后拼接。每个会话最多保留 200 条消息，序列化体积目标上限为 1MB；图片通过 data URL 传输，单张发送限制为 10MiB，接收端也会校验图片 MIME、原始大小和 data URL 长度，支持 JPG、PNG、WebP、GIF。超过本地历史预算的超大图片会保留消息、文件名、MIME 和大小，但不会把完整 `dataUrl` 写入 `localStorage`，刷新后会显示“图片未保存在本地”。
 
-聊天输入支持从剪贴板粘贴 JPG、PNG、WebP 图片，粘贴图片会复用上传图片的大小和类型校验。聊天消息图片和待发送图片可单击打开大图预览，支持点击遮罩、关闭按钮或 `Esc` 关闭。桌面端聊天框可通过顶部标题栏拖动换位置，位置保存到 `serverlessVideoChat:chatPanelPosition:v1`；移动端仍使用底部面板布局，不套用桌面拖拽位置。
+聊天输入支持从剪贴板粘贴 JPG、PNG、WebP、GIF 图片，粘贴图片会复用上传图片的大小和类型校验。聊天消息图片和待发送图片可单击打开大图预览，GIF 动图由浏览器 `<img>` 原生播放。大图预览支持点击遮罩、关闭按钮或 `Esc` 关闭。桌面端聊天框可通过顶部标题栏拖动换位置，位置保存到 `serverlessVideoChat:chatPanelPosition:v1`；移动端仍使用底部面板布局，不套用桌面拖拽位置。
 
 ## 组件职责
 
@@ -135,14 +140,18 @@ DataConnection 当前承载两类消息：
 - `src/components/SettingsMenu.tsx`：画质和视频填充模式菜单
 - `src/components/ClickHeart.tsx`：全局双击爱心动画层
 - `src/components/ChatPanel.tsx`：通话页图文聊天覆盖层，包含本地历史、图片预览、加密状态和发送输入
-- `src/components/NetworkDiagnosticsPanel.tsx`：通话页左上角连接状态和网络环境诊断面板，运行 ICE candidate 采集并展示穿透等级估算
+- `src/components/NetworkDiagnosticsPanel.tsx`：通话页左上角连接状态和网络环境诊断面板，展示入站/出站 codec、视频码率、连接上下行带宽、TURN 使用状态，并可运行 ICE candidate 采集展示穿透等级估算
 - `src/stores/chatStore.ts`：聊天会话、草稿、未读数、发送状态和 localStorage 持久化
 - `src/lib/chatCrypto.ts`：聊天应用层 ECDH + AES-GCM 加密
 - `src/lib/chatProtocol.ts`：聊天 wire payload 转换和校验
 - `src/lib/chatStorage.ts`：聊天记录本地存储、会话 ID、历史裁剪
 - `src/lib/chatAttachments.ts`：聊天图片 MIME 白名单和剪贴板图片提取
 - `src/lib/chatPanelPosition.ts`：桌面聊天框位置裁剪和本地持久化
+- `src/lib/mediaStats.ts`：从 `RTCPeerConnection.getStats()` 提取入站/出站视频 codec、视频 kbps、连接上下行 kbps 和 selected candidate pair TURN 使用状态；上下行优先使用 candidate pair 计数，缺失时 fallback 到 RTP 聚合
+- `src/lib/iceConfig.ts`：集中生成 PeerJS `RTCConfiguration`；默认 STUN-only，支持运行时切换 TURN，URL `turn=1` 可从初始连接加入 TURN，`turn=force` 可强制 relay
+- `src/lib/turnFallback.ts`：根据 caller/callee 角色、TURN 配置和 ICE/PC 状态派生自动 fallback 动作及 UI 状态文案
 - `src/lib/networkDiagnostics.ts`：WebRTC ICE candidate 解析、无 STUN / 多 STUN 探测和 TURN 需求风险汇总
+- `src/lib/videoCodecPreference.ts`：重排 SDP 视频 payload 顺序，优先尝试 `AV1 > VP9 > H265 > 其他`
 
 ## 部署边界
 
@@ -186,13 +195,18 @@ Cloudflare Pages 项目：
 - 拖动后聊天框高度回归检查：拖动后外框高度保持 464px，追加大量内容后仍保持 464px，消息列表 `overflow-y: auto`
 - 连接失败状态检查：当 `PC: failed` 或 ICE failed/closed 时，状态不再显示绿色 Connected；远端 track 存在但传输失败时提示 TURN 中继要求
 - 网络环境诊断单元测试：覆盖 ICE candidate 解析、仅 host 候选、稳定 srflx 映射、srflx 端口漂移和 TURN 风险估算
-- `npx --yes wrangler pages deploy dist --project-name serverlessvideochat --branch main`：通过，部署地址 `https://b0b8cd1e.serverlessvideochat.pages.dev`
-- `https://b0b8cd1e.serverlessvideochat.pages.dev`：HTTP 200，加载 `/assets/index-CoTtNvtq.js` / `/assets/index-Da96yU29.css`
-- `https://chat.uavserver.cn`：HTTP 200，加载同一套 `/assets/index-CoTtNvtq.js` / `/assets/index-Da96yU29.css`，未发现 `/ServerlessVideoChat/` 错误资源路径
+- 入站/出站视频和连接 stats 单元测试：覆盖 `codecId -> codec.mimeType`、inbound `mimeType` fallback、视频 kbps / Mbps 格式化、selected candidate pair 上下行计数、RTP fallback、TURN relay 判定，以及“存在未选 relay 候选但 selected pair 非 relay 时不误报 TURN 使用”
+- 视频 codec SDP 优先级单元测试：覆盖 `AV1 > VP9 > H265 > 其他`，并兼容 SDP `HEVC` 命名
+- TURN 配置单元测试：覆盖默认 STUN-only、URL `turn=1` 显式加入 TURN、`turn=force` 强制 relay、URL 参数覆盖环境默认值、运行时 TURN mode 构建和 TURN 配置存在性判断
+- 自动 TURN fallback 单元测试：覆盖 caller 直连失败后触发重试、callee 直连失败后等待对方重连、无 TURN 配置/已启用 TURN/已尝试 fallback 时不重复触发
+- `npx --yes wrangler pages deploy dist --project-name serverlessvideochat --branch main`：通过，最新部署地址 `https://bec6ea23.serverlessvideochat.pages.dev`
+- `https://bec6ea23.serverlessvideochat.pages.dev`：HTTP 200，加载 `/assets/index-Bo5Ui0Nd.js` / `/assets/index-Da96yU29.css`
+- `https://chat.uavserver.cn`：HTTP 200，加载同一套 `/assets/index-Bo5Ui0Nd.js` / `/assets/index-Da96yU29.css`，未发现 `/ServerlessVideoChat/` 错误资源路径
 - Playwright 打开 `https://chat.uavserver.cn`：首页 DOM 正常渲染；自动化浏览器未授权摄像头时显示“摄像头访问被拒绝”业务提示，不再白屏
-- `https://chat.uavserver.cn` 已部署包含阿里云 TURN 配置的 `assets/index-B213MKBd.js`；公网 TCP 3478 可达，浏览器 TURN relay candidate 采集通过
+- `https://chat.uavserver.cn/assets/index-Bo5Ui0Nd.js` 与本地 `dist` JS SHA256 一致，并包含左上角 `Codec: in/out`、`Video: in/out` 视频压缩方式和视频净荷码率、`Up:` / `Down:` 连接上下行带宽、`TURN:` 使用状态展示逻辑、PeerJS `sdpTransform` codec 优先级逻辑、默认 STUN-only / URL 显式启用 TURN 逻辑、直连失败后自动 TURN fallback 逻辑，以及图文聊天 `image/gif` 支持逻辑
+- `https://chat.uavserver.cn` 已部署包含阿里云 TURN 配置但默认初次连接不启用 TURN 候选；直连失败后会自动启用 TURN 并重建 media/data 连接。公网 TCP 3478 可达，浏览器 TURN relay candidate 采集通过
 
-当前测试重点覆盖聊天本地存储裁剪、聊天 wire payload 校验、ECDH + AES-GCM 加密往返、剪贴板图片提取、聊天框位置裁剪/持久化，以及 WebRTC failed 状态下的连接状态派生。
+当前测试重点覆盖聊天本地存储裁剪、10MiB 图片发送上限、GIF 图片白名单、超大图片本地历史降级保存、聊天 wire payload 校验、ECDH + AES-GCM 加密往返、剪贴板图片提取、聊天框位置裁剪/持久化、WebRTC failed 状态下的连接状态派生、默认不启用 TURN 候选、URL 显式启用/强制 TURN、自动 TURN fallback 动作派生、入站/出站视频 codec / kbps stats 解析、连接上下行带宽和 TURN 使用状态解析。
 
 ## 已知不一致和风险
 
@@ -201,12 +215,12 @@ Cloudflare Pages 项目：
 - `SettingsMenu` 和部分按钮 title 仍是英文，整体 UI 文案未完全统一。
 - `CallPage` 左上角诊断信息常驻，偏调试 UI。
 - 通话页本地 PIP 在摄像头关闭时没有像首页一样显示 `VideoOff` 占位。
-- DataConnection 没有 close/error/reconnect 状态处理，爱心和画质同步可能静默失效。
-- 如果重新构建时没有注入有效 TURN，复杂 NAT 下会出现 PeerJS signaling 已收到 stream track、但 `RTCPeerConnection` 失败导致无视频帧和无 DataChannel 的情况。
+- DataConnection 除初始直连失败的 TURN fallback 外，没有独立 close/error/reconnect 状态处理；通话中后续链路抖动时，爱心和画质同步仍可能静默失效。
+- 如果重新构建时没有注入有效 TURN，复杂 NAT 下仍会出现 PeerJS signaling 已收到 stream track、但 `RTCPeerConnection` 失败导致无视频帧和无 DataChannel 的情况；此时自动 fallback 无法生效。
 - 左上角网络环境诊断基于浏览器 ICE candidate 做启发式估算，不能精确读取真实 NAT 层数；“无需 STUN”只适合同局域网或公网可路由主机场景，跨网络仍建议至少保留 STUN。
-- 聊天图片通过同一条 DataConnection 发送；虽然有 512KB 限制，但弱网或连续图片仍可能延迟 HEART/QUALITY_CHANGE 这类控制消息。
-- 聊天本地历史存储在浏览器 localStorage 中，不是跨设备同步，也不是本地加密数据库。
-- 剪贴板截图通常体积较大，超过 512KB 时会提示失败；当前没有做客户端压缩。
+- 聊天图片通过同一条 DataConnection 发送；虽然有 10MiB 限制，但弱网或连续大图/GIF 仍可能延迟 HEART/QUALITY_CHANGE 这类控制消息。
+- 聊天本地历史存储在浏览器 localStorage 中，不是跨设备同步，也不是本地加密数据库；超大图片/GIF 当前会话可传输和显示，但刷新后可能只保留消息壳，不保留完整图片正文。
+- 剪贴板截图或 GIF 通常体积较大，超过 10MiB 时会提示失败；当前没有做客户端压缩。
 - 桌面聊天框位置是本机浏览器偏好，换设备或清理站点数据后不会保留。
 - TURN 相关 `VITE_*` 变量会进入前端构建产物，不能当作服务端秘密，只能作为客户端可见凭证管理。
 

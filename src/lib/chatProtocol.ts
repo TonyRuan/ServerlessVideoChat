@@ -5,6 +5,7 @@ import {
   type ChatKind,
   type ChatMessage,
 } from './chatStorage';
+import { isAcceptedChatImageType } from './chatAttachments';
 
 export interface WireChatMessage {
   id: string;
@@ -19,8 +20,6 @@ export interface WireChatPayload {
   type: 'CHAT_MESSAGE';
   message: WireChatMessage;
 }
-
-const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export function createWireChatMessage(message: ChatMessage, from: string): WireChatPayload {
   return {
@@ -43,7 +42,7 @@ function isChatImageAttachment(image: unknown): image is ChatImageAttachment {
   return (
     typeof record.dataUrl === 'string' &&
     typeof record.mimeType === 'string' &&
-    ALLOWED_IMAGE_TYPES.has(record.mimeType) &&
+    isAcceptedChatImageType(record.mimeType) &&
     record.dataUrl.startsWith(`data:${record.mimeType};base64,`) &&
     record.dataUrl.length <= MAX_CHAT_IMAGE_DATA_URL_CHARS &&
     typeof record.name === 'string' &&

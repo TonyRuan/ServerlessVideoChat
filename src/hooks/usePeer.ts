@@ -1,5 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { type MediaConnection, type DataConnection } from 'peerjs';
+import { preferVideoCodecsInSdp } from '../lib/videoCodecPreference';
+import {
+  buildPeerRtcConfigForMode,
+  hasConfiguredTurnServers,
+  resolveTurnMode,
+  type IceConfigEnvironment,
+  type TurnMode,
+} from '../lib/iceConfig';
 
 interface PeerState {
   peer: Peer | null;
@@ -8,49 +16,45 @@ interface PeerState {
   error: Error | null;
 }
 
+type PeerWithMutableOptions = Peer & {
+  options?: {
+    config?: RTCConfiguration;
+  };
+};
+
+const getIceConfigEnvironment = (): IceConfigEnvironment => ({
+  VITE_TURN_URLS: import.meta.env.VITE_TURN_URLS,
+  VITE_TURN_USERNAME: import.meta.env.VITE_TURN_USERNAME,
+  VITE_TURN_CREDENTIAL: import.meta.env.VITE_TURN_CREDENTIAL,
+  VITE_TURN_MODE: import.meta.env.VITE_TURN_MODE,
+});
+
 export function usePeer() {
+  const iceConfigEnvironmentRef = useRef<IceConfigEnvironment>(getIceConfigEnvironment());
   const [state, setState] = useState<PeerState>({
     peer: null,
     myId: '',
     isPeerReady: false,
     error: null,
   });
+  const [turnMode, setTurnMode] = useState<TurnMode>(() => resolveTurnMode(iceConfigEnvironmentRef.current));
 
   const peerRef = useRef<Peer | null>(null);
   const onCallHandlerRef = useRef<((call: MediaConnection) => void) | null>(null);
   const onDataHandlerRef = useRef<((conn: DataConnection) => void) | null>(null);
 
-  useEffect(() => {
-    const baseIceServers: RTCIceServer[] = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
-    ];
-
-    const turnUrls = (import.meta.env.VITE_TURN_URLS ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const turnUsername = import.meta.env.VITE_TURN_USERNAME as string | undefined;
-    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
-
-    const iceServers: RTCIceServer[] = [...baseIceServers];
-    if (turnUrls.length > 0) {
-      if (turnUsername && turnCredential) {
-        iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
-      } else {
-        iceServers.push({ urls: turnUrls });
-      }
+  const applyTurnModeToPeer = useCallback((mode: TurnMode) => {
+    const peer = peerRef.current as PeerWithMutableOptions | null;
+    if (peer?.options) {
+      peer.options.config = buildPeerRtcConfigForMode(iceConfigEnvironmentRef.current, mode);
     }
+    setTurnMode(mode);
+  }, []);
 
+  useEffect(() => {
+    const initialTurnMode = resolveTurnMode(iceConfigEnvironmentRef.current);
     const peer = new Peer(undefined, {
-      config: {
-        iceServers,
-      },
+      config: buildPeerRtcConfigForMode(iceConfigEnvironmentRef.current, initialTurnMode),
     });
     
     peer.on('open', (id) => {
@@ -82,10 +86,18 @@ export function usePeer() {
     };
   }, []);
 
+  const enableTurnFallback = useCallback(() => {
+    if (!hasConfiguredTurnServers(iceConfigEnvironmentRef.current) || turnMode !== 'off') return false;
+    applyTurnModeToPeer('on');
+    return true;
+  }, [applyTurnModeToPeer, turnMode]);
+
   const callPeer = useCallback((peerId: string, stream: MediaStream) => {
     if (!peerRef.current) return null;
     
-    const call = peerRef.current.call(peerId, stream);
+    const call = peerRef.current.call(peerId, stream, {
+      sdpTransform: preferVideoCodecsInSdp,
+    });
     return call;
   }, []);
 
@@ -110,5 +122,8 @@ export function usePeer() {
     connectToPeer,
     onIncomingCall,
     onIncomingData,
+    turnMode,
+    hasTurnConfig: hasConfiguredTurnServers(iceConfigEnvironmentRef.current),
+    enableTurnFallback,
   };
 }

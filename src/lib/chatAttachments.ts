@@ -1,4 +1,4 @@
-export const ACCEPTED_CHAT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+export const ACCEPTED_CHAT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 
 interface ClipboardLikeItem {
   kind: string;
