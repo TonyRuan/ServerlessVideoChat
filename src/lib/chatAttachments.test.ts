@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getImageFileFromClipboardItems, isAcceptedChatImageType } from './chatAttachments';
+import { getImageFileFromClipboardItems, getImageFileFromDataTransfer, isAcceptedChatImageType } from './chatAttachments';
 
 const makeItem = (kind: string, type: string, file: File | null) => ({
   kind,
@@ -29,6 +29,28 @@ describe('chatAttachments', () => {
     ]);
 
     expect(selected).toBe(gifFile);
+  });
+
+  it('returns the first supported image file from dragged files', () => {
+    const textFile = new File(['hello'], 'note.txt', { type: 'text/plain' });
+    const gifFile = new File(['gif'], 'drop.gif', { type: 'image/gif' });
+    const pngFile = new File(['image'], 'drop.png', { type: 'image/png' });
+
+    const selected = getImageFileFromDataTransfer({
+      files: [textFile, gifFile, pngFile],
+    } as unknown as DataTransfer);
+
+    expect(selected).toBe(gifFile);
+  });
+
+  it('returns null when dragged files do not include supported images', () => {
+    const textFile = new File(['hello'], 'note.txt', { type: 'text/plain' });
+
+    const selected = getImageFileFromDataTransfer({
+      files: [textFile],
+    } as unknown as DataTransfer);
+
+    expect(selected).toBeNull();
   });
 
   it('accepts the same image types used by chat payload validation', () => {

@@ -6,6 +6,7 @@ import {
   type ChatMessage,
 } from './chatStorage';
 import { isAcceptedChatImageType } from './chatAttachments';
+import { isValidCallSessionId, isValidPeerId, type CallSessionRole } from './callSession';
 
 export interface WireChatMessage {
   id: string;
@@ -21,6 +22,14 @@ export interface WireChatPayload {
   message: WireChatMessage;
 }
 
+export interface SessionResumePayload {
+  type: 'SESSION_RESUME';
+  version: 1;
+  sessionId: string;
+  peerId: string;
+  role: CallSessionRole;
+}
+
 export function createWireChatMessage(message: ChatMessage, from: string): WireChatPayload {
   return {
     type: 'CHAT_MESSAGE',
@@ -32,6 +41,24 @@ export function createWireChatMessage(message: ChatMessage, from: string): WireC
       image: message.image,
       createdAt: message.createdAt,
     },
+  };
+}
+
+export function createSessionResumeMessage({
+  sessionId,
+  peerId,
+  role,
+}: {
+  sessionId: string;
+  peerId: string;
+  role: CallSessionRole;
+}): SessionResumePayload {
+  return {
+    type: 'SESSION_RESUME',
+    version: 1,
+    sessionId,
+    peerId,
+    role,
   };
 }
 
@@ -71,6 +98,21 @@ export function isWireChatPayload(payload: unknown): payload is WireChatPayload 
   if (message.kind === 'text') return hasText && !message.image;
   if (message.kind === 'image') return hasImage && !hasText;
   return hasText && hasImage;
+}
+
+export function isSessionResumePayload(payload: unknown): payload is SessionResumePayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'SESSION_RESUME' &&
+    record.version === 1 &&
+    typeof record.sessionId === 'string' &&
+    isValidCallSessionId(record.sessionId) &&
+    typeof record.peerId === 'string' &&
+    isValidPeerId(record.peerId) &&
+    (record.role === 'host' || record.role === 'guest')
+  );
 }
 
 export function wireMessageToIncomingChatMessage(

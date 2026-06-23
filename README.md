@@ -8,13 +8,14 @@
 - **设备与网络适配**：
   - 支持多分辨率画质切换（360p ~ 4K）。
   - 默认 STUN 直连优先；当 ICE / PeerConnection 失败时自动启用 TURN 并重建媒体与聊天数据通道。
-  - 内置 WebRTC 诊断面板，展示 ICE/PC 状态、轨道数、视频 codec、视频码率、连接上下行带宽和当前是否使用 TURN。
+  - 新建会议和邀请链接会携带 URL hash session；页面刷新后可用同一 session 自动重连，不需要 localStorage 存恢复信息。
+  - 内置 WebRTC 诊断面板，展示版本号、编译时间、ICE/PC 状态、轨道数、视频 codec、视频码率、连接上下行带宽和当前是否使用 TURN。
   - 提供网络环境诊断入口，可通过 ICE candidate 采集估算当前网络穿透风险。
 - **加密图文聊天**：
   - 聊天消息通过 DataChannel 传输，并在应用层使用 ECDH + AES-GCM 加密。
-  - 聊天记录默认保存在浏览器本地 `localStorage`。
+  - 聊天记录和输入草稿默认只保存在当前页面内存，刷新或关闭页面后清空，不长期写入浏览器存储。
   - 支持文字、JPG、PNG、WebP、GIF，单张图片上限 10MiB。
-  - 支持从剪贴板粘贴图片、单击图片放大查看、桌面端拖动聊天窗口位置。
+  - 支持点击选择、从剪贴板粘贴、拖拽上传图片，单击图片可放大查看，桌面端可拖动聊天窗口位置。
 - **视频带宽控制**：
   - SDP 协商优先级为 `AV1 > VP9 > H265 > 其他`。
   - 页面左上角会显示当前协商到的视频 codec 和上下行带宽估算。
@@ -37,7 +38,7 @@
 src/
 ├── components/
 │   ├── Button.tsx        # 基础 UI 组件
-│   ├── ChatPanel.tsx     # 图文聊天、图片预览、拖动位置和加密状态
+│   ├── ChatPanel.tsx     # 图文聊天、图片预览、拖拽上传、拖动位置和加密状态
 │   ├── ClickHeart.tsx    # 连点爱心动画组件（带防误触、Zustand 状态分发）
 │   ├── NetworkDiagnosticsPanel.tsx # WebRTC 状态、带宽、TURN 和网络环境诊断
 │   └── SettingsMenu.tsx  # 画质和画面自适应设置菜单
@@ -48,11 +49,13 @@ src/
 │   ├── Home.tsx          # 首页，加入/创建房间入口
 │   └── CallPage.tsx      # 通话主页面，包含视频渲染、状态展示、WebRTC 连接逻辑、数据通道通信
 ├── stores/
-│   ├── chatStore.ts      # 本地聊天记录、草稿、未读数和 localStorage 持久化
+│   ├── chatStore.ts      # 当前页面内存态聊天记录、草稿、未读数和发送状态
 │   └── heartStore.ts     # Zustand Store，管理本地和远端的爱心数据同步
 ├── lib/
 │   ├── chatCrypto.ts     # 聊天 ECDH + AES-GCM 应用层加密
-│   ├── chatProtocol.ts   # 聊天 wire payload 转换和校验
+│   ├── chatProtocol.ts   # 聊天和 session resume wire payload 转换和校验
+│   ├── callSession.ts    # URL hash session 解析、生成和邀请链接构造
+│   ├── buildInfo.ts      # 构建版本和编译时间格式化
 │   ├── iceConfig.ts      # STUN/TURN RTCConfiguration 生成和 TURN mode 解析
 │   ├── mediaStats.ts     # WebRTC stats 中的 codec、码率、上下行和 TURN 使用解析
 │   ├── networkDiagnostics.ts # ICE candidate 网络环境诊断

@@ -17,7 +17,19 @@ import {
   isEncryptedChatEnvelope,
   type ChatCryptoSession,
 } from '../lib/chatCrypto';
-import { createWireChatMessage, isWireChatPayload } from '../lib/chatProtocol';
+import {
+  createSessionResumeMessage,
+  createWireChatMessage,
+  isSessionResumePayload,
+  isWireChatPayload,
+} from '../lib/chatProtocol';
+import {
+  buildCallSessionHash,
+  buildInviteLink,
+  createCallSessionId,
+  parseCallSessionHash,
+  type CallSessionState,
+} from '../lib/callSession';
 import {
   getCallConnectionIssue,
   getEffectiveConnectionStatus,
@@ -40,6 +52,11 @@ import {
   type TurnFallbackStatus,
 } from '../lib/turnFallback';
 import { cn } from '../lib/utils';
+
+const connectionMatchesSession = (connection: { metadata?: unknown }, sessionId: string) => {
+  const metadata = connection.metadata as Record<string, unknown> | null | undefined;
+  return metadata?.sessionId === sessionId;
+};
 
 export default function CallPage() {
   const { remotePeerId } = useParams<{ remotePeerId: string }>();
@@ -69,7 +86,13 @@ export default function CallPage() {
     hasTurnConfig,
     enableTurnFallback,
   } = usePeer();
-  
+  const [callSession, setCallSession] = useState<CallSessionState>(() =>
+    parseCallSessionHash(location.hash) ?? {
+      sessionId: createCallSessionId(),
+      role: remotePeerId ? 'guest' : 'host',
+    }
+  );
+
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<CallConnectionStatus>('initializing');
   const [incomingCall, setIncomingCall] = useState<MediaConnection | null>(null);
@@ -118,6 +141,7 @@ export default function CallPage() {
   const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
   const chatCryptoPublicKeySentRef = useRef(false);
+  const callSessionRef = useRef(callSession);
   
   // Heart store
   const outgoingHeart = useHeartStore(state => state.outgoingHeart);
@@ -128,6 +152,10 @@ export default function CallPage() {
   const createLocalMessage = useChatStore(state => state.createLocalMessage);
   const addIncomingWireMessage = useChatStore(state => state.addIncomingWireMessage);
   const updateMessageStatus = useChatStore(state => state.updateMessageStatus);
+
+  useEffect(() => {
+    callSessionRef.current = callSession;
+  }, [callSession]);
 
   // Controls visibility state
   const [showControls, setShowControls] = useState(true);
@@ -169,8 +197,42 @@ export default function CallPage() {
 
   useEffect(() => {
     if (!myId || !conversationPeerId) return;
-    setConversationPeers(myId, conversationPeerId);
-  }, [myId, conversationPeerId, setConversationPeers]);
+    setConversationPeers(myId, conversationPeerId, callSession.sessionId);
+  }, [callSession.sessionId, myId, conversationPeerId, setConversationPeers]);
+
+  useEffect(() => {
+    const parsed = parseCallSessionHash(location.hash);
+    if (parsed && parsed.sessionId !== callSession.sessionId) {
+      setCallSession(parsed);
+      return;
+    }
+
+    const nextSession: CallSessionState = {
+      ...callSession,
+      peerId: conversationPeerId ?? remotePeerId ?? callSession.peerId,
+    };
+    const nextHash = buildCallSessionHash(nextSession);
+
+    if (nextHash !== location.hash) {
+      setCallSession(nextSession);
+      navigate(`${location.pathname}${location.search}${nextHash}`, { replace: true });
+    }
+  }, [
+    callSession,
+    conversationPeerId,
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+    remotePeerId,
+  ]);
+
+  useEffect(() => {
+    if (!callSession.peerId || !myId || callSession.peerId === myId) return;
+    if (remotePeerId === callSession.peerId) return;
+
+    navigate(`/call/${callSession.peerId}${buildCallSessionHash(callSession)}`, { replace: true });
+  }, [callSession, myId, navigate, remotePeerId]);
 
   useEffect(() => {
     if (remotePeerId) {
@@ -209,6 +271,12 @@ export default function CallPage() {
     }
     return session;
   }, []);
+
+  const createConnectionMetadata = useCallback(() => ({
+    sessionId: callSessionRef.current.sessionId,
+    role: callSessionRef.current.role,
+    ...(myId ? { peerId: myId } : {}),
+  }), [myId]);
 
   // Handle quality change wrapper
   const handleQualityChange = async (quality: VideoQuality) => {
@@ -251,6 +319,16 @@ export default function CallPage() {
   };
 
   const handleDataMessage = useCallback(async (data: unknown) => {
+    if (isSessionResumePayload(data)) {
+      if (data.sessionId === callSessionRef.current.sessionId) {
+        setConversationPeerId(data.peerId);
+        if (myId) {
+          setConversationPeers(myId, data.peerId, callSessionRef.current.sessionId);
+        }
+      }
+      return;
+    }
+
     if (isChatCryptoKeyMessage(data)) {
       try {
         const session = await ensureChatCryptoSession(dataConnRef.current);
@@ -269,7 +347,7 @@ export default function CallPage() {
         const payload = await session.decrypt(data);
         if (isWireChatPayload(payload)) {
           if (myId) {
-            setConversationPeers(myId, payload.message.from);
+            setConversationPeers(myId, payload.message.from, callSessionRef.current.sessionId);
           }
           addIncomingWireMessage(payload);
         }
@@ -337,12 +415,19 @@ export default function CallPage() {
     dataConnRef.current = conn;
     setConversationPeerId(conn.peer);
     if (myId) {
-      setConversationPeers(myId, conn.peer);
+      setConversationPeers(myId, conn.peer, callSessionRef.current.sessionId);
     }
 
     const handleOpen = () => {
       if (connectionGenerationRef.current !== generation) return;
       setIsDataConnected(true);
+      if (myId) {
+        conn.send(createSessionResumeMessage({
+          sessionId: callSessionRef.current.sessionId,
+          peerId: myId,
+          role: callSessionRef.current.role,
+        }));
+      }
       void ensureChatCryptoSession(conn).catch((err) => {
         console.error('Unable to start chat crypto session:', err);
         setIsChatSecure(false);
@@ -406,22 +491,6 @@ export default function CallPage() {
       pcCleanupRef.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    if (remotePeerId) return;
-    if (!myId) return;
-
-    const raw = `${location.search ?? ''} ${location.hash ?? ''}`;
-    const match = raw.match(
-      /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i
-    );
-    if (!match) return;
-
-    const extractedPeerId = match[0];
-    if (extractedPeerId === myId) return;
-
-    navigate(`/call/${extractedPeerId}`, { replace: true });
-  }, [remotePeerId, myId, location.search, location.hash, navigate]);
 
   useEffect(() => {
     const action = deriveTurnFallbackAction({
@@ -598,7 +667,7 @@ export default function CallPage() {
     if (!callRef.current) {
       setConnectionStatus('connecting');
       const generation = connectionGenerationRef.current;
-      const call = callPeer(remotePeerId, stream);
+      const call = callPeer(remotePeerId, stream, createConnectionMetadata());
 
       if (call) {
         callRef.current = call;
@@ -630,24 +699,32 @@ export default function CallPage() {
 
     // Also establish data connection if not exists
     if (!dataConnRef.current) {
-      const conn = connectToPeer(remotePeerId);
+      const conn = connectToPeer(remotePeerId, createConnectionMetadata());
       if (conn) {
         setupDataConnection(conn, connectionGenerationRef.current);
       }
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, attachPeerConnectionDebug, resetDataConnection, setupDataConnection, reconnectAttempt]);
+  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, createConnectionMetadata, attachPeerConnectionDebug, resetDataConnection, setupDataConnection, reconnectAttempt]);
 
-  // 2. Callee logic - Register listeners (Signaling)
-  // Register listeners immediately when Peer is ready, do NOT wait for stream
+  // 2. Register incoming listeners so same-session refreshes can replace old connections.
+  // Register listeners immediately when Peer is ready, do NOT wait for stream.
   useEffect(() => {
-    if (!isPeerReady || remotePeerId) return; // Only if we are callee (no remotePeerId)
-    
-    // We are waiting for a call
-    setConnectionStatus('waiting');
-    
+    if (!isPeerReady) return;
+
+    if (!remotePeerId) {
+      setConnectionStatus('waiting');
+    }
+
     onIncomingCall((call) => {
       console.log('Incoming call received');
+      const isSameSession = connectionMatchesSession(call, callSessionRef.current.sessionId);
       if (callRef.current) {
+        if (!isSameSession) {
+          call.close();
+          return;
+        }
+        closeActiveConnections();
+      } else if (remotePeerId && !isSameSession) {
         call.close();
         return;
       }
@@ -658,13 +735,22 @@ export default function CallPage() {
 
     onIncomingData((conn) => {
       console.log('Incoming data connection received');
+      const isSameSession = connectionMatchesSession(conn, callSessionRef.current.sessionId);
       if (dataConnRef.current && dataConnRef.current.open) {
+        if (!isSameSession) {
+          conn.close();
+          return;
+        }
+        dataConnRef.current.close();
+        dataConnRef.current = null;
+        resetDataConnection();
+      } else if (remotePeerId && !isSameSession) {
         conn.close();
         return;
       }
       setupDataConnection(conn, connectionGenerationRef.current);
     });
-  }, [isPeerReady, remotePeerId, onIncomingCall, onIncomingData, setupDataConnection]);
+  }, [closeActiveConnections, isPeerReady, remotePeerId, onIncomingCall, onIncomingData, resetDataConnection, setupDataConnection]);
 
   // 3. Callee logic - Handle incoming call events
   useEffect(() => {
@@ -751,8 +837,7 @@ export default function CallPage() {
 
   const copyLink = () => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    const link = `${cleanBaseUrl}/call/${myId}`;
+    const link = buildInviteLink(baseUrl, myId, callSession.sessionId);
     
     navigator.clipboard.writeText(link);
     setCopied(true);
@@ -761,8 +846,7 @@ export default function CallPage() {
 
   const inviteLink = (() => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    return `${cleanBaseUrl}/call/${myId}`;
+    return buildInviteLink(baseUrl, myId, callSession.sessionId);
   })();
 
   const endCall = () => {

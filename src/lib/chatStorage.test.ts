@@ -6,6 +6,7 @@ import {
   MAX_CHAT_STORAGE_CHARS,
   loadChatMessages,
   makeConversationId,
+  purgePersistedChatStorage,
   saveChatDraft,
   saveChatMessages,
   trimMessagesForStorage,
@@ -99,7 +100,7 @@ describe('chatStorage', () => {
     expect(JSON.stringify({ version: 1, messages: trimmed }).length).toBeLessThanOrEqual(MAX_CHAT_STORAGE_CHARS);
   });
 
-  it('persists an oversized local image history entry without the data URL payload', () => {
+  it('does not persist chat history or drafts to localStorage', () => {
     const conversationId = 'a:b';
     const originalLocalStorage = globalThis.localStorage;
     const entries = new Map<string, string>();
@@ -118,27 +119,47 @@ describe('chatStorage', () => {
       configurable: true,
     });
 
-    saveChatMessages(conversationId, [
-      {
-        ...makeMessage('large-gif', 1),
-        kind: 'image',
-        image: {
-          dataUrl: `data:image/gif;base64,${'a'.repeat(MAX_CHAT_STORAGE_CHARS + 1)}`,
-          mimeType: 'image/gif',
-          name: 'large.gif',
-          size: MAX_CHAT_IMAGE_BYTES,
-        },
-      },
-      makeMessage('text-final', 2),
-    ]);
+    saveChatMessages(conversationId, [makeMessage('m-1', 1)]);
+    saveChatDraft(conversationId, 'hello');
 
     const loaded = loadChatMessages(conversationId);
 
-    expect(loaded).toHaveLength(2);
-    expect(loaded[0].id).toBe('large-gif');
-    expect(loaded[0].image?.dataUrl).toBe('');
-    expect(loaded[0].image?.name).toBe('large.gif');
-    expect(loaded[1].id).toBe('text-final');
+    expect(loaded).toEqual([]);
+    expect(entries.size).toBe(0);
+
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: originalLocalStorage,
+      configurable: true,
+    });
+  });
+
+  it('purges legacy persisted chat history and drafts without touching unrelated keys', () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const entries = new Map<string, string>([
+      ['serverlessVideoChat:chat:v1:a:b', 'history'],
+      ['serverlessVideoChat:chatDraft:v1:a:b', 'draft'],
+      ['serverlessVideoChat:chatPanelPosition:v1', 'position'],
+      ['theme', 'dark'],
+    ]);
+    const storage = {
+      length: entries.size,
+      key: (index: number) => Array.from(entries.keys())[index] ?? null,
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, value: string) => entries.set(key, value),
+      removeItem: (key: string) => entries.delete(key),
+    } as unknown as Storage;
+
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storage,
+      configurable: true,
+    });
+
+    purgePersistedChatStorage();
+
+    expect(entries.has('serverlessVideoChat:chat:v1:a:b')).toBe(false);
+    expect(entries.has('serverlessVideoChat:chatDraft:v1:a:b')).toBe(false);
+    expect(entries.get('serverlessVideoChat:chatPanelPosition:v1')).toBe('position');
+    expect(entries.get('theme')).toBe('dark');
 
     Object.defineProperty(globalThis, 'localStorage', {
       value: originalLocalStorage,

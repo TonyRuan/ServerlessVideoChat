@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createWireChatMessage, isWireChatPayload } from './chatProtocol';
+import {
+  createSessionResumeMessage,
+  createWireChatMessage,
+  isSessionResumePayload,
+  isWireChatPayload,
+} from './chatProtocol';
 import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGE_DATA_URL_CHARS, type ChatMessage } from './chatStorage';
 
 const localMessage: ChatMessage = {
@@ -112,5 +117,24 @@ describe('chatProtocol', () => {
 
     expect(isWireChatPayload(oversizedImage)).toBe(false);
     expect(isWireChatPayload(oversizedDataUrl)).toBe(false);
+  });
+
+  it('creates and validates session resume payloads', () => {
+    const payload = createSessionResumeMessage({
+      sessionId: 'session-1',
+      peerId: 'peer-a',
+      role: 'host',
+    });
+
+    expect(payload).toEqual({
+      type: 'SESSION_RESUME',
+      version: 1,
+      sessionId: 'session-1',
+      peerId: 'peer-a',
+      role: 'host',
+    });
+    expect(isSessionResumePayload(payload)).toBe(true);
+    expect(isSessionResumePayload({ ...payload, peerId: 'http://bad' })).toBe(false);
+    expect(isSessionResumePayload({ ...payload, role: 'admin' })).toBe(false);
   });
 });

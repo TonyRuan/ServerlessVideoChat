@@ -14,6 +14,7 @@ import {
   type TurnUsage,
 } from '../lib/mediaStats';
 import { turnFallbackStatusLabel, type TurnFallbackStatus } from '../lib/turnFallback';
+import { BUILD_INFO } from '../lib/buildInfo';
 import { cn } from '../lib/utils';
 
 interface NetworkDiagnosticsPanelProps {
@@ -151,6 +152,9 @@ export function NetworkDiagnosticsPanel({
         </div>
       </div>
 
+      <div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
+        {BUILD_INFO.label}
+      </div>
       <div className="mt-1 text-[11px] text-gray-400">
         ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
       </div>

@@ -8,6 +8,7 @@ import {
   type IceConfigEnvironment,
   type TurnMode,
 } from '../lib/iceConfig';
+import type { CallSessionRole } from '../lib/callSession';
 
 interface PeerState {
   peer: Peer | null;
@@ -21,6 +22,12 @@ type PeerWithMutableOptions = Peer & {
     config?: RTCConfiguration;
   };
 };
+
+export interface PeerConnectionMetadata {
+  sessionId: string;
+  role: CallSessionRole;
+  peerId?: string;
+}
 
 const getIceConfigEnvironment = (): IceConfigEnvironment => ({
   VITE_TURN_URLS: import.meta.env.VITE_TURN_URLS,
@@ -92,19 +99,22 @@ export function usePeer() {
     return true;
   }, [applyTurnModeToPeer, turnMode]);
 
-  const callPeer = useCallback((peerId: string, stream: MediaStream) => {
+  const callPeer = useCallback((peerId: string, stream: MediaStream, metadata?: PeerConnectionMetadata) => {
     if (!peerRef.current) return null;
-    
+
     const call = peerRef.current.call(peerId, stream, {
+      metadata,
       sdpTransform: preferVideoCodecsInSdp,
     });
     return call;
   }, []);
 
-  const connectToPeer = useCallback((peerId: string) => {
+  const connectToPeer = useCallback((peerId: string, metadata?: PeerConnectionMetadata) => {
     if (!peerRef.current) return null;
-    
-    const conn = peerRef.current.connect(peerId);
+
+    const conn = peerRef.current.connect(peerId, {
+      metadata,
+    });
     return conn;
   }, []);
 

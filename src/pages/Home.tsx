@@ -5,6 +5,7 @@ import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
+import { buildCallSessionHash, createCallSessionId, parseCallSessionHash } from '../lib/callSession';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -24,18 +25,23 @@ export default function Home() {
   }, [stream]);
 
   const handleCreateMeeting = () => {
-    navigate('/call');
+    navigate(`/call${buildCallSessionHash({ sessionId: createCallSessionId(), role: 'host' })}`);
   };
 
   const handleJoinMeeting = (e: React.FormEvent) => {
     e.preventDefault();
     let id = meetingId.trim();
     if (!id) return;
+    let callSessionHash = buildCallSessionHash({ sessionId: createCallSessionId(), role: 'guest' });
 
     // Enhanced URL parsing logic
     try {
       // 1. Try to treat input as a full URL
       const url = new URL(id.startsWith('http') ? id : `https://${id}`);
+      const parsedSession = parseCallSessionHash(url.hash);
+      if (parsedSession) {
+        callSessionHash = buildCallSessionHash({ ...parsedSession, role: 'guest' });
+      }
       const pathParts = url.pathname.split('/');
       // Find the segment after 'call'
       const callIndex = pathParts.findIndex(part => part === 'call');
@@ -60,7 +66,7 @@ export default function Home() {
         id = parts[parts.length - 1];
     }
 
-    navigate(`/call/${id}`);
+    navigate(`/call/${id}${callSessionHash}`);
   };
 
   return (

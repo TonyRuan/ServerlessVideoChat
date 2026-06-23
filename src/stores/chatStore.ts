@@ -1,10 +1,7 @@
 import { create } from 'zustand';
 import {
-  loadChatDraft,
-  loadChatMessages,
   makeConversationId,
-  saveChatDraft,
-  saveChatMessages,
+  purgePersistedChatStorage,
   type ChatImageAttachment,
   type ChatKind,
   type ChatMessage,
@@ -25,7 +22,7 @@ interface ChatStore {
   draftText: string;
   isPanelOpen: boolean;
   unreadCount: number;
-  setConversationPeers: (myPeerId: string, peerId: string) => void;
+  setConversationPeers: (myPeerId: string, peerId: string, callSessionId?: string) => void;
   setDraftText: (text: string) => void;
   setPanelOpen: (isOpen: boolean) => void;
   createLocalMessage: (input: CreateLocalMessageInput) => ChatMessage | null;
@@ -59,11 +56,7 @@ const upsertMessage = (messages: ChatMessage[], message: ChatMessage) => {
   return nextMessages;
 };
 
-const persistMessages = (conversationId: string | null, messages: ChatMessage[]) => {
-  if (conversationId) {
-    saveChatMessages(conversationId, messages);
-  }
-};
+purgePersistedChatStorage();
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   conversationId: null,
@@ -72,22 +65,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   draftText: '',
   isPanelOpen: false,
   unreadCount: 0,
-  setConversationPeers: (myPeerId, peerId) => {
-    const conversationId = makeConversationId(myPeerId, peerId);
+  setConversationPeers: (myPeerId, peerId, callSessionId) => {
+    const conversationId = makeConversationId(myPeerId, peerId, callSessionId);
     const current = get();
-    if (current.conversationId === conversationId) return;
+    if (current.conversationId === conversationId) {
+      if (current.peerId !== peerId) set({ peerId });
+      return;
+    }
 
     set({
       conversationId,
       peerId,
-      messages: loadChatMessages(conversationId),
-      draftText: loadChatDraft(conversationId),
+      messages: [],
+      draftText: '',
       unreadCount: 0,
     });
   },
   setDraftText: (text) => {
-    const { conversationId } = get();
-    if (conversationId) saveChatDraft(conversationId, text);
     set({ draftText: text });
   },
   setPanelOpen: (isPanelOpen) => {
@@ -110,8 +104,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     };
 
     const messages = upsertMessage(state.messages, message);
-    persistMessages(state.conversationId, messages);
-    saveChatDraft(state.conversationId, '');
     set({ messages, draftText: '' });
 
     void myPeerId;
@@ -133,7 +125,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     };
 
     const messages = upsertMessage(state.messages, message);
-    persistMessages(state.conversationId, messages);
     set({
       messages,
       unreadCount: state.isPanelOpen ? state.unreadCount : state.unreadCount + 1,
@@ -144,7 +135,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const messages = state.messages.map((message) =>
       message.id === id ? { ...message, status } : message
     );
-    persistMessages(state.conversationId, messages);
     set({ messages });
   },
 }));

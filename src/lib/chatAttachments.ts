@@ -34,3 +34,7 @@ export function getImageFileFromFiles(files: ArrayLike<File>) {
 
   return null;
 }
+
+export function getImageFileFromDataTransfer(dataTransfer: Pick<DataTransfer, 'files'>) {
+  return getImageFileFromFiles(dataTransfer.files);
+}

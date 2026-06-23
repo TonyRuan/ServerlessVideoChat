@@ -7,6 +7,7 @@ import { MAX_CHAT_IMAGE_BYTES, type ChatImageAttachment } from '../lib/chatStora
 import {
   ACCEPTED_CHAT_IMAGE_TYPES,
   getImageFileFromClipboardItems,
+  getImageFileFromDataTransfer,
   getImageFileFromFiles,
   isAcceptedChatImageType,
 } from '../lib/chatAttachments';
@@ -51,6 +52,8 @@ const formatImageSize = (bytes: number) => {
 
   return `${Math.ceil(bytes / 1024)} KB`;
 };
+
+const hasDraggedFiles = (dataTransfer: DataTransfer) => Array.from(dataTransfer.types).includes('Files');
 
 const readImageAttachment = (file: File): Promise<ChatImageAttachment> => {
   return new Promise((resolve, reject) => {
@@ -97,11 +100,13 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
     typeof window !== 'undefined' ? window.innerWidth >= DESKTOP_MIN_WIDTH : false
   );
   const [isDragging, setIsDragging] = useState(false);
+  const [isImageDragActive, setIsImageDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
   const dragOffsetRef = useRef<ChatPanelPosition | null>(null);
   const dragPositionRef = useRef<ChatPanelPosition | null>(null);
+  const imageDragDepthRef = useRef(0);
 
   const canSend = isConnected && isSecure && !isSending && Boolean(draftText.trim() || selectedImage);
 
@@ -114,6 +119,8 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
   useEffect(() => {
     if (!isOpen) {
       setPreviewImage(null);
+      setIsImageDragActive(false);
+      imageDragDepthRef.current = 0;
     }
   }, [isOpen]);
 
@@ -245,6 +252,53 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
     await handlePickImage(file);
   };
 
+  const clearImageDragState = () => {
+    imageDragDepthRef.current = 0;
+    setIsImageDragActive(false);
+  };
+
+  const handleImageDragEnter = (event: React.DragEvent<HTMLElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+
+    event.preventDefault();
+    imageDragDepthRef.current += 1;
+    setIsImageDragActive(true);
+  };
+
+  const handleImageDragOver = (event: React.DragEvent<HTMLElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsImageDragActive(true);
+  };
+
+  const handleImageDragLeave = (event: React.DragEvent<HTMLElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+
+    event.preventDefault();
+    imageDragDepthRef.current -= 1;
+    if (imageDragDepthRef.current <= 0) {
+      clearImageDragState();
+    }
+  };
+
+  const handleImageDrop = async (event: React.DragEvent<HTMLElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+
+    event.preventDefault();
+    const file = getImageFileFromDataTransfer(event.dataTransfer);
+    clearImageDragState();
+
+    if (!file) {
+      setSelectedImage(null);
+      setError('仅支持 JPG、PNG、WebP 或 GIF 图片');
+      return;
+    }
+
+    await handlePickImage(file);
+  };
+
   const handleSend = async () => {
     if (!canSend) return;
 
@@ -273,12 +327,25 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
       <section
         ref={sectionRef}
         style={panelStyle}
+        onDragEnter={handleImageDragEnter}
+        onDragOver={handleImageDragOver}
+        onDragLeave={handleImageDragLeave}
+        onDrop={(event) => void handleImageDrop(event)}
         className={cn(
           'absolute inset-x-4 bottom-24 z-40 h-[62dvh] overflow-hidden rounded-xl border border-gray-700 bg-gray-900/95 text-white shadow-2xl backdrop-blur-md md:inset-x-auto md:right-4 md:top-36 md:bottom-28 md:h-auto md:w-[360px]',
           useCustomPosition && 'md:bottom-auto md:right-auto',
           isDragging && 'select-none'
         )}
       >
+        {isImageDragActive && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-gray-950/75 p-4 text-center backdrop-blur-sm">
+            <div className="rounded-lg border border-blue-400/60 bg-gray-900/95 px-5 py-4 shadow-xl">
+              <ImagePlus className="mx-auto h-7 w-7 text-blue-300" />
+              <p className="mt-2 text-sm font-semibold text-white">松开上传图片</p>
+              <p className="mt-1 text-xs text-gray-400">支持 JPG、PNG、WebP、GIF，最大 {MAX_CHAT_IMAGE_SIZE_MB}MB</p>
+            </div>
+          </div>
+        )}
         <div className="flex h-full min-h-0 flex-col">
         <header
           className="flex items-center justify-between border-b border-gray-700 px-4 py-3 md:cursor-move md:touch-none"
