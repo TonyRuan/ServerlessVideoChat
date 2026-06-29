@@ -43,6 +43,13 @@ describe('iceConfig', () => {
     expect(config.iceTransportPolicy).toBe('relay');
   });
 
+  it('keeps relay-only policy visible even when TURN URLs are missing', () => {
+    const config = buildPeerRtcConfig({}, '#turn=force');
+
+    expect(config.iceTransportPolicy).toBe('relay');
+    expect(config.iceServers?.some((server) => Array.isArray(server.urls))).toBe(false);
+  });
+
   it('lets the URL override an environment default that enables TURN', () => {
     expect(resolveTurnMode({ VITE_TURN_MODE: 'on' }, '?turn=0')).toBe('off');
     expect(resolveTurnMode({ VITE_TURN_MODE: 'off' }, '?turn=1')).toBe('on');
@@ -58,5 +65,12 @@ describe('iceConfig', () => {
   it('detects whether TURN credentials can be used for fallback', () => {
     expect(hasConfiguredTurnServers(envWithTurn)).toBe(true);
     expect(hasConfiguredTurnServers({ VITE_TURN_URLS: '' })).toBe(false);
+    expect(hasConfiguredTurnServers({ VITE_TURN_URLS: 'turn:turn.example.com:3478' })).toBe(false);
+    expect(hasConfiguredTurnServers({ VITE_TURN_URLS: 'turn:turn.example.com:3478', VITE_TURN_USERNAME: 'user' })).toBe(
+      false
+    );
+    expect(
+      hasConfiguredTurnServers({ VITE_TURN_URLS: 'turn:turn.example.com:3478', VITE_TURN_CREDENTIAL: 'pass' })
+    ).toBe(false);
   });
 });

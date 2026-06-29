@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, PhoneOff, Copy, Share2, Loader2, Volume2, VolumeX, MessageCircle } from 'lucide-react';
+import { Video, Mic, MicOff, VideoOff, PhoneOff, Loader2, Volume2, VolumeX, MessageCircle } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { ChatPanel } from '../components/ChatPanel';
+import { InviteLinkCard } from '../components/InviteLinkCard';
 import { NetworkDiagnosticsPanel } from '../components/NetworkDiagnosticsPanel';
 import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
@@ -36,6 +37,12 @@ import {
   isPeerTransportFailed,
   type CallConnectionStatus,
 } from '../lib/callConnectivity';
+import {
+  dataReconnectDelayMs,
+  isCurrentConnection,
+  shouldAcceptIncomingSessionConnection,
+  turnFallbackRoleForSessionRole,
+} from '../lib/callConnectionPolicy';
 import {
   extractConnectionTransferStats,
   extractInboundVideoTransferStats,
@@ -127,6 +134,8 @@ export default function CallPage() {
   const [turnFallbackAttempted, setTurnFallbackAttempted] = useState(false);
   const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [dataReconnectAttempt, setDataReconnectAttempt] = useState(0);
+  const [, setDataReconnectCount] = useState(0);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -142,6 +151,7 @@ export default function CallPage() {
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
   const chatCryptoPublicKeySentRef = useRef(false);
   const callSessionRef = useRef(callSession);
+  const dataReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Heart store
   const outgoingHeart = useHeartStore(state => state.outgoingHeart);
@@ -156,6 +166,14 @@ export default function CallPage() {
   useEffect(() => {
     callSessionRef.current = callSession;
   }, [callSession]);
+
+  useEffect(() => {
+    return () => {
+      if (dataReconnectTimerRef.current) {
+        clearTimeout(dataReconnectTimerRef.current);
+      }
+    };
+  }, []);
 
   // Controls visibility state
   const [showControls, setShowControls] = useState(true);
@@ -275,8 +293,9 @@ export default function CallPage() {
   const createConnectionMetadata = useCallback(() => ({
     sessionId: callSessionRef.current.sessionId,
     role: callSessionRef.current.role,
+    turnMode,
     ...(myId ? { peerId: myId } : {}),
-  }), [myId]);
+  }), [myId, turnMode]);
 
   // Handle quality change wrapper
   const handleQualityChange = async (quality: VideoQuality) => {
@@ -374,6 +393,31 @@ export default function CallPage() {
     setIsChatSecure(false);
   }, [resetChatCryptoState]);
 
+  const closeCurrentDataConnection = useCallback(() => {
+    const conn = dataConnRef.current;
+    dataConnRef.current = null;
+    conn?.close();
+  }, []);
+
+  const scheduleDataReconnect = useCallback(() => {
+    if (!remotePeerId) return;
+
+    setDataReconnectCount((count) => {
+      const delayMs = dataReconnectDelayMs(count);
+      if (delayMs === null) return count;
+
+      if (dataReconnectTimerRef.current) {
+        clearTimeout(dataReconnectTimerRef.current);
+      }
+      dataReconnectTimerRef.current = setTimeout(() => {
+        dataReconnectTimerRef.current = null;
+        setDataReconnectAttempt((attempt) => attempt + 1);
+      }, delayMs);
+
+      return count + 1;
+    });
+  }, [remotePeerId]);
+
   const resetConnectionStats = useCallback(() => {
     inboundVideoSampleRef.current = null;
     outboundVideoSampleRef.current = null;
@@ -399,16 +443,15 @@ export default function CallPage() {
     pcCleanupRef.current?.();
     pcCleanupRef.current = null;
     callRef.current?.close();
-    dataConnRef.current?.close();
+    closeCurrentDataConnection();
     callRef.current = null;
-    dataConnRef.current = null;
     setIncomingCall(null);
     setRemoteStream(null);
     setRtcIceState('');
     setRtcConnectionState('');
     resetConnectionStats();
     resetDataConnection();
-  }, [resetConnectionStats, resetDataConnection]);
+  }, [closeCurrentDataConnection, resetConnectionStats, resetDataConnection]);
 
   const setupDataConnection = useCallback((conn: DataConnection, generation = connectionGenerationRef.current) => {
     resetChatCryptoState();
@@ -419,8 +462,13 @@ export default function CallPage() {
     }
 
     const handleOpen = () => {
-      if (connectionGenerationRef.current !== generation) return;
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(dataConnRef.current, conn)) return;
       setIsDataConnected(true);
+      setDataReconnectCount(0);
+      if (dataReconnectTimerRef.current) {
+        clearTimeout(dataReconnectTimerRef.current);
+        dataReconnectTimerRef.current = null;
+      }
       if (myId) {
         conn.send(createSessionResumeMessage({
           sessionId: callSessionRef.current.sessionId,
@@ -436,15 +484,16 @@ export default function CallPage() {
 
     const handleClose = () => {
       if (connectionGenerationRef.current !== generation) return;
-      if (dataConnRef.current === conn) {
+      if (isCurrentConnection(dataConnRef.current, conn)) {
         dataConnRef.current = null;
         resetDataConnection();
+        scheduleDataReconnect();
       }
     };
 
     conn.on('open', handleOpen);
     conn.on('data', (data: unknown) => {
-      if (connectionGenerationRef.current !== generation) return;
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(dataConnRef.current, conn)) return;
       void handleDataMessage(data);
     });
     conn.on('close', handleClose);
@@ -456,7 +505,15 @@ export default function CallPage() {
     if (conn.open) {
       handleOpen();
     }
-  }, [ensureChatCryptoSession, handleDataMessage, myId, resetChatCryptoState, resetDataConnection, setConversationPeers]);
+  }, [
+    ensureChatCryptoSession,
+    handleDataMessage,
+    myId,
+    resetChatCryptoState,
+    resetDataConnection,
+    scheduleDataReconnect,
+    setConversationPeers,
+  ]);
 
   // Initialize local stream
   useEffect(() => {
@@ -494,7 +551,7 @@ export default function CallPage() {
 
   useEffect(() => {
     const action = deriveTurnFallbackAction({
-      role: remotePeerId ? 'caller' : 'callee',
+      role: turnFallbackRoleForSessionRole(callSession.role),
       turnMode,
       hasTurnConfig,
       attempted: turnFallbackAttempted,
@@ -518,6 +575,7 @@ export default function CallPage() {
     }
   }, [
     closeActiveConnections,
+    callSession.role,
     enableTurnFallback,
     hasTurnConfig,
     remotePeerId,
@@ -673,26 +731,36 @@ export default function CallPage() {
         callRef.current = call;
         attachPeerConnectionDebug(call.peerConnection);
         call.on('stream', (remoteStream) => {
-          if (connectionGenerationRef.current !== generation) return;
+          if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
         });
 
         call.on('close', () => {
-          if (connectionGenerationRef.current !== generation) return;
+          if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
           setConnectionStatus('disconnected');
           setRemoteStream(null);
-          dataConnRef.current?.close();
+          closeCurrentDataConnection();
           callRef.current = null;
-          dataConnRef.current = null;
           resetDataConnection();
+          setRtcIceState('');
+          setRtcConnectionState('');
+          resetConnectionStats();
           attachPeerConnectionDebug(null);
         });
 
         call.on('error', (err) => {
-            if (connectionGenerationRef.current !== generation) return;
+            if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
             console.error('Call error:', err);
             setConnectionStatus('disconnected');
+            setRemoteStream(null);
+            closeCurrentDataConnection();
+            callRef.current = null;
+            resetDataConnection();
+            setRtcIceState('');
+            setRtcConnectionState('');
+            resetConnectionStats();
+            attachPeerConnectionDebug(null);
         });
       }
     }
@@ -704,7 +772,21 @@ export default function CallPage() {
         setupDataConnection(conn, connectionGenerationRef.current);
       }
     }
-  }, [isPeerReady, stream, remotePeerId, callPeer, connectToPeer, createConnectionMetadata, attachPeerConnectionDebug, resetDataConnection, setupDataConnection, reconnectAttempt]);
+  }, [
+    isPeerReady,
+    stream,
+    remotePeerId,
+    callPeer,
+    connectToPeer,
+    createConnectionMetadata,
+    attachPeerConnectionDebug,
+    closeCurrentDataConnection,
+    resetConnectionStats,
+    resetDataConnection,
+    setupDataConnection,
+    reconnectAttempt,
+    dataReconnectAttempt,
+  ]);
 
   // 2. Register incoming listeners so same-session refreshes can replace old connections.
   // Register listeners immediately when Peer is ready, do NOT wait for stream.
@@ -718,15 +800,16 @@ export default function CallPage() {
     onIncomingCall((call) => {
       console.log('Incoming call received');
       const isSameSession = connectionMatchesSession(call, callSessionRef.current.sessionId);
-      if (callRef.current) {
-        if (!isSameSession) {
-          call.close();
-          return;
-        }
-        closeActiveConnections();
-      } else if (remotePeerId && !isSameSession) {
+      if (!shouldAcceptIncomingSessionConnection({ isSameSession })) {
         call.close();
         return;
+      }
+      const metadata = call.metadata as { turnMode?: string } | undefined;
+      if (metadata?.turnMode && metadata.turnMode !== 'off') {
+        enableTurnFallback();
+      }
+      if (callRef.current) {
+        closeActiveConnections();
       }
       setConversationPeerId(call.peer);
       setIncomingCall(call);
@@ -736,21 +819,32 @@ export default function CallPage() {
     onIncomingData((conn) => {
       console.log('Incoming data connection received');
       const isSameSession = connectionMatchesSession(conn, callSessionRef.current.sessionId);
-      if (dataConnRef.current && dataConnRef.current.open) {
-        if (!isSameSession) {
-          conn.close();
-          return;
-        }
-        dataConnRef.current.close();
-        dataConnRef.current = null;
-        resetDataConnection();
-      } else if (remotePeerId && !isSameSession) {
+      if (!shouldAcceptIncomingSessionConnection({ isSameSession })) {
         conn.close();
         return;
       }
+      const metadata = conn.metadata as { turnMode?: string } | undefined;
+      if (metadata?.turnMode && metadata.turnMode !== 'off') {
+        enableTurnFallback();
+      }
+      if (dataConnRef.current && dataConnRef.current !== conn) {
+        const previousConn = dataConnRef.current;
+        dataConnRef.current = null;
+        resetDataConnection();
+        previousConn.close();
+      }
       setupDataConnection(conn, connectionGenerationRef.current);
     });
-  }, [closeActiveConnections, isPeerReady, remotePeerId, onIncomingCall, onIncomingData, resetDataConnection, setupDataConnection]);
+  }, [
+    closeActiveConnections,
+    enableTurnFallback,
+    isPeerReady,
+    onIncomingCall,
+    onIncomingData,
+    remotePeerId,
+    resetDataConnection,
+    setupDataConnection,
+  ]);
 
   // 3. Callee logic - Handle incoming call events
   useEffect(() => {
@@ -760,34 +854,45 @@ export default function CallPage() {
     // Register listeners immediately
     attachPeerConnectionDebug(incomingCall.peerConnection);
     incomingCall.on('stream', (remoteStream) => {
-      if (connectionGenerationRef.current !== generation) return;
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, incomingCall)) return;
       console.log('Received remote stream');
       setRemoteStream(remoteStream);
       setConnectionStatus('connected');
     });
 
     incomingCall.on('close', () => {
-      if (connectionGenerationRef.current !== generation) return;
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, incomingCall)) return;
       setConnectionStatus('disconnected');
       setRemoteStream(null);
-      dataConnRef.current?.close();
+      closeCurrentDataConnection();
       callRef.current = null;
-      dataConnRef.current = null;
       setIncomingCall(null);
       resetDataConnection();
+      setRtcIceState('');
+      setRtcConnectionState('');
+      resetConnectionStats();
       attachPeerConnectionDebug(null);
     });
 
     incomingCall.on('error', (err) => {
-      if (connectionGenerationRef.current !== generation) return;
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, incomingCall)) return;
       console.error('Incoming call error:', err);
       setConnectionStatus('disconnected');
+      setRemoteStream(null);
+      closeCurrentDataConnection();
+      callRef.current = null;
+      setIncomingCall(null);
+      resetDataConnection();
+      setRtcIceState('');
+      setRtcConnectionState('');
+      resetConnectionStats();
+      attachPeerConnectionDebug(null);
     });
 
     return () => {
       // Cleanup listeners if needed? PeerJS handles this on close
     };
-  }, [incomingCall, attachPeerConnectionDebug, resetDataConnection]);
+  }, [incomingCall, attachPeerConnectionDebug, closeCurrentDataConnection, resetConnectionStats, resetDataConnection]);
 
   // 4. Callee logic - Answer call (Stream handling)
   // Answer call when stream becomes available
@@ -853,11 +958,8 @@ export default function CallPage() {
     if (callRef.current) {
       callRef.current.close();
     }
-    if (dataConnRef.current) {
-      dataConnRef.current.close();
-      dataConnRef.current = null;
-      resetDataConnection();
-    }
+    closeCurrentDataConnection();
+    resetDataConnection();
     navigate('/');
   };
 
@@ -873,6 +975,16 @@ export default function CallPage() {
   );
   const displayedCallConnectionIssue =
     turnFallbackStatus === 'retrying' || turnFallbackStatus === 'waiting' ? null : callConnectionIssue;
+  const transportFailureHint = (() => {
+    if (rtcIceState !== 'failed' || turnFallbackStatus !== 'idle') return '';
+    if (!hasTurnConfig) {
+      return '当前网络直连失败，通常需要配置 TURN 中继服务才能跨设备稳定通话。';
+    }
+    if (turnMode === 'off') {
+      return '当前已关闭初始 TURN 候选，直连失败；可移除 turn=0 或启用 TURN 后重试。';
+    }
+    return '已启用 TURN 候选但连接仍失败，请检查 TURN 地址、凭据、防火墙和 relay 端口，或使用 turn=force 排障。';
+  })();
 
   if (streamError || peerError) {
     return (
@@ -920,7 +1032,8 @@ export default function CallPage() {
             )}
           </>
         ) : (
-          <div className="text-center space-y-4 p-4">
+          <div className="max-h-screen w-full overflow-y-auto px-4 pb-28 pt-20 text-center">
+            <div className="space-y-4">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-gray-800 animate-pulse">
               <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
             </div>
@@ -942,27 +1055,16 @@ export default function CallPage() {
               <p className="text-sm text-amber-300">{turnFallbackStatusLabel(turnFallbackStatus)}</p>
             )}
 
-            {rtcIceState === 'failed' && turnFallbackStatus === 'idle' && (
+            {transportFailureHint && (
               <p className="text-sm text-amber-400">
-                当前网络环境直连失败，通常需要配置 TURN 中继服务才能跨设备稳定通话。
+                {transportFailureHint}
               </p>
             )}
-            
+
             {connectionStatus === 'waiting' && myId && (
-              <div className="mt-8 p-6 bg-gray-800 rounded-xl max-w-md mx-auto border border-gray-700">
-                <p className="text-gray-400 mb-2 text-sm">分享此链接邀请他人</p>
-                <div className="flex gap-2">
-                  <input 
-                    readOnly 
-                    value={inviteLink}
-                    className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none"
-                  />
-                  <Button onClick={copyLink} variant="secondary" size="icon">
-                    {copied ? <Share2 className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                  </Button>
-                </div>
-              </div>
+              <InviteLinkCard inviteLink={inviteLink} copied={copied} onCopy={copyLink} />
             )}
+            </div>
           </div>
         )}
       </div>

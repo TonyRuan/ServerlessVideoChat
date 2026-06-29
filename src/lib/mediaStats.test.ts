@@ -195,14 +195,16 @@ describe('mediaStats', () => {
       localCandidateType: 'host',
       remoteCandidateType: 'srflx',
     });
-    expect(formatTurnUsage(result.metrics.turnUsage)).toBe('未使用');
+    expect(formatTurnUsage(result.metrics.turnUsage)).toBe('未选中');
   });
 
   it('formats missing and available connection transfer values for the compact panel', () => {
     expect(formatConnectionBitrate(null)).toBe('-');
     expect(formatConnectionBitrate(42)).toBe('42 kbps');
     expect(formatConnectionBitrate(2530)).toBe('2.5 Mbps');
-    expect(formatTurnUsage({ isUsingTurn: false, localCandidateType: 'host', remoteCandidateType: 'srflx' })).toBe('未使用');
+    expect(formatTurnUsage({ isUsingTurn: false, localCandidateType: 'host', remoteCandidateType: 'srflx' })).toBe(
+      '未选中'
+    );
     expect(formatTurnUsage({ isUsingTurn: null, localCandidateType: null, remoteCandidateType: null })).toBe('-');
   });
 });

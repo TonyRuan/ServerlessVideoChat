@@ -323,5 +323,5 @@ export function formatVideoBitrate(kbps: number | null): string {
 
 export function formatTurnUsage(turnUsage: TurnUsage): string {
   if (turnUsage.isUsingTurn === null) return '-';
-  return turnUsage.isUsingTurn ? '使用中' : '未使用';
+  return turnUsage.isUsingTurn ? '使用中' : '未选中';
 }

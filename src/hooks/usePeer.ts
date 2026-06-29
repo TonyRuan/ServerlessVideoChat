@@ -26,6 +26,7 @@ type PeerWithMutableOptions = Peer & {
 export interface PeerConnectionMetadata {
   sessionId: string;
   role: CallSessionRole;
+  turnMode?: TurnMode;
   peerId?: string;
 }
 

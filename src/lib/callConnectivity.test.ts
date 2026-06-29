@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getCallConnectionIssue, getEffectiveConnectionStatus } from './callConnectivity';
+import { getCallConnectionIssue, getEffectiveConnectionStatus, isPeerTransportFailed } from './callConnectivity';
 
 describe('callConnectivity', () => {
   it('treats a failed peer connection as disconnected even after a stream event', () => {
@@ -10,6 +10,11 @@ describe('callConnectivity', () => {
   it('keeps the original status when the peer connection has not failed', () => {
     expect(getEffectiveConnectionStatus('connected', 'connected', 'connected')).toBe('connected');
     expect(getEffectiveConnectionStatus('waiting', '', '')).toBe('waiting');
+  });
+
+  it('treats closed transport as disconnected without making it a TURN fallback failure', () => {
+    expect(isPeerTransportFailed('closed', 'closed')).toBe(false);
+    expect(getEffectiveConnectionStatus('connected', 'closed', 'closed')).toBe('disconnected');
   });
 
   it('explains why remote tracks exist but video and chat are unavailable', () => {

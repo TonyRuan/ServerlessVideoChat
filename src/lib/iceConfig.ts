@@ -50,8 +50,12 @@ function parseTurnUrls(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function hasCompleteCredentialPair(env: IceConfigEnvironment): boolean {
+  return Boolean(env.VITE_TURN_USERNAME) && Boolean(env.VITE_TURN_CREDENTIAL);
+}
+
 export function hasConfiguredTurnServers(env: IceConfigEnvironment): boolean {
-  return parseTurnUrls(env.VITE_TURN_URLS).length > 0;
+  return parseTurnUrls(env.VITE_TURN_URLS).length > 0 && hasCompleteCredentialPair(env);
 }
 
 export function currentLocationToken() {
@@ -74,7 +78,7 @@ export function buildPeerRtcConfigForMode(env: IceConfigEnvironment, mode: TurnM
   const iceServers: RTCIceServer[] = [...BASE_ICE_SERVERS];
   const turnUrls = parseTurnUrls(env.VITE_TURN_URLS);
 
-  if (mode !== 'off' && turnUrls.length > 0) {
+  if (mode !== 'off' && turnUrls.length > 0 && hasCompleteCredentialPair(env)) {
     const username = env.VITE_TURN_USERNAME;
     const credential = env.VITE_TURN_CREDENTIAL;
     if (username && credential) {
@@ -86,6 +90,6 @@ export function buildPeerRtcConfigForMode(env: IceConfigEnvironment, mode: TurnM
 
   return {
     iceServers,
-    ...(mode === 'force' && turnUrls.length > 0 ? { iceTransportPolicy: 'relay' as RTCIceTransportPolicy } : {}),
+    ...(mode === 'force' ? { iceTransportPolicy: 'relay' as RTCIceTransportPolicy } : {}),
   };
 }
