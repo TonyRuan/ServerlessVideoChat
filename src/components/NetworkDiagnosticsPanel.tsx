@@ -115,7 +115,12 @@ export function NetworkDiagnosticsPanel({
   };
 
   return (
-    <div className="absolute left-4 top-4 z-20 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-gray-700 bg-gray-800/85 px-3 py-2 text-xs font-medium text-gray-300 shadow-xl backdrop-blur">
+    <div
+      className={cn(
+        'absolute left-4 top-4 z-20 max-w-[calc(100vw-2rem)] border border-gray-700 bg-gray-800/85 text-xs font-medium text-gray-300 shadow-xl backdrop-blur',
+        isExpanded ? 'w-[min(22rem,calc(100vw-2rem))] rounded-xl px-3 py-2' : 'w-fit rounded-full px-2.5 py-1.5'
+      )}
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
@@ -131,16 +136,18 @@ export function NetworkDiagnosticsPanel({
           <span className="truncate">{statusLabel(effectiveConnectionStatus)}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={run}
-            disabled={isRunning}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-600 bg-gray-900/70 px-2 py-1 text-[11px] text-gray-100 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
-            title="运行 WebRTC ICE 网络环境诊断"
-          >
-            {isRunning ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
-            网络环境诊断
-          </button>
+          {isExpanded && (
+            <button
+              type="button"
+              onClick={run}
+              disabled={isRunning}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-600 bg-gray-900/70 px-2 py-1 text-[11px] text-gray-100 transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+              title="运行 WebRTC ICE 网络环境诊断"
+            >
+              {isRunning ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
+              网络环境诊断
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setIsExpanded((value) => !value)}
@@ -152,40 +159,41 @@ export function NetworkDiagnosticsPanel({
         </div>
       </div>
 
-      <div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
-        {BUILD_INFO.label}
-      </div>
-      <div className="mt-1 text-[11px] text-gray-400">
-        ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
-      </div>
-      <div className="mt-1 text-[11px] text-gray-400">
-        V: {remoteTrackCounts.video} / A: {remoteTrackCounts.audio} · Size: {remoteVideo.width}x
-        {remoteVideo.height} · RS: {remoteVideo.readyState} · {remoteVideo.paused ? 'paused' : 'playing'}
-      </div>
-      <div className="mt-1 text-[11px] text-gray-400">
-        Codec: in {formatVideoCodec(inbound.videoCodec)} / out {formatVideoCodec(outbound.videoCodec)}
-      </div>
-      <div className="mt-1 text-[11px] text-gray-400">
-        Video: in {formatVideoBitrate(inbound.videoBitrateKbps)} / out{' '}
-        {formatVideoBitrate(outbound.videoBitrateKbps)}
-      </div>
-      <div className="mt-1 text-[11px] text-gray-400">
-        Up: {formatConnectionBitrate(connection.uplinkKbps)} · Down:{' '}
-        {formatConnectionBitrate(connection.downlinkKbps)} · TURN: {formatTurnUsage(connection.turnUsage)}
-      </div>
-      {turnFallbackStatus !== 'idle' && (
-        <div className="mt-1 text-[11px] text-amber-300">
-          TURN fallback: {turnFallbackStatusLabel(turnFallbackStatus)}
-        </div>
-      )}
-      <div className="mt-1 text-[11px] text-gray-400">
-        Bytes: inV {inbound.videoBytes ?? '-'} / outV {outbound.videoBytes ?? '-'} / inA{' '}
-        {inbound.audioBytes ?? '-'}
-      </div>
-      {remotePlayError && <div className="mt-1 text-[11px] text-amber-400">Play: {remotePlayError}</div>}
-
       {isExpanded && (
-        <div className="mt-3 border-t border-gray-700 pt-3">
+        <div>
+          <div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
+            {BUILD_INFO.label}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            V: {remoteTrackCounts.video} / A: {remoteTrackCounts.audio} · Size: {remoteVideo.width}x
+            {remoteVideo.height} · RS: {remoteVideo.readyState} · {remoteVideo.paused ? 'paused' : 'playing'}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            Codec: in {formatVideoCodec(inbound.videoCodec)} / out {formatVideoCodec(outbound.videoCodec)}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            Video: in {formatVideoBitrate(inbound.videoBitrateKbps)} / out{' '}
+            {formatVideoBitrate(outbound.videoBitrateKbps)}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            Up: {formatConnectionBitrate(connection.uplinkKbps)} · Down:{' '}
+            {formatConnectionBitrate(connection.downlinkKbps)} · TURN: {formatTurnUsage(connection.turnUsage)}
+          </div>
+          {turnFallbackStatus !== 'idle' && (
+            <div className="mt-1 text-[11px] text-amber-300">
+              TURN fallback: {turnFallbackStatusLabel(turnFallbackStatus)}
+            </div>
+          )}
+          <div className="mt-1 text-[11px] text-gray-400">
+            Bytes: inV {inbound.videoBytes ?? '-'} / outV {outbound.videoBytes ?? '-'} / inA{' '}
+            {inbound.audioBytes ?? '-'}
+          </div>
+          {remotePlayError && <div className="mt-1 text-[11px] text-amber-400">Play: {remotePlayError}</div>}
+
+          <div className="mt-3 border-t border-gray-700 pt-3">
           {!summary && !error && (
             <div className="flex items-center gap-2 text-[11px] text-gray-400">
               <Wifi className="h-3.5 w-3.5" />
@@ -242,6 +250,7 @@ export function NetworkDiagnosticsPanel({
               </div>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>

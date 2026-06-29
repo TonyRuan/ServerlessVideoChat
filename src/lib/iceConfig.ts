@@ -60,7 +60,7 @@ export function currentLocationToken() {
 }
 
 export function resolveTurnMode(env: IceConfigEnvironment, locationToken = currentLocationToken()): TurnMode {
-  return turnModeFromLocation(locationToken) ?? parseTurnMode(env.VITE_TURN_MODE) ?? 'off';
+  return turnModeFromLocation(locationToken) ?? parseTurnMode(env.VITE_TURN_MODE) ?? 'on';
 }
 
 export function buildPeerRtcConfig(

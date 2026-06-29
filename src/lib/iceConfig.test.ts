@@ -8,15 +8,23 @@ const envWithTurn = {
 };
 
 describe('iceConfig', () => {
-  it('keeps TURN disabled by default even when TURN credentials are configured', () => {
+  it('enables TURN by default when TURN credentials are configured', () => {
     const config = buildPeerRtcConfig(envWithTurn, '');
 
     expect(config.iceTransportPolicy).toBeUndefined();
-    expect(config.iceServers?.some((server) => String(server.urls).startsWith('turn:'))).toBe(false);
+    expect(config.iceServers?.some((server) => Array.isArray(server.urls))).toBe(true);
     expect(config.iceServers?.some((server) => String(server.urls).startsWith('stun:'))).toBe(true);
   });
 
-  it('enables TURN only when the session URL requests it', () => {
+  it('keeps TURN disabled when the session URL requests it', () => {
+    const config = buildPeerRtcConfig(envWithTurn, '?turn=0');
+
+    expect(config.iceTransportPolicy).toBeUndefined();
+    expect(config.iceServers?.some((server) => Array.isArray(server.urls))).toBe(false);
+    expect(config.iceServers?.some((server) => String(server.urls).startsWith('stun:'))).toBe(true);
+  });
+
+  it('includes TURN when the session URL requests it', () => {
     const config = buildPeerRtcConfig(envWithTurn, '?turn=1');
 
     const turnServer = config.iceServers?.find((server) => Array.isArray(server.urls));

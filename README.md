@@ -7,7 +7,7 @@
 - **纯前端 P2P 架构**：无需中心化媒体服务器，使用 PeerJS 进行信令交换，WebRTC 直接传输音视频流。
 - **设备与网络适配**：
   - 支持多分辨率画质切换（360p ~ 4K）。
-  - 默认 STUN 直连优先；当 ICE / PeerConnection 失败时自动启用 TURN 并重建媒体与聊天数据通道。
+  - 默认加入 STUN 和 TURN 候选；也可通过 URL 或环境变量显式关闭 TURN，关闭后仍支持直连失败自动 fallback。
   - 新建会议和邀请链接会携带 URL hash session；页面刷新后可用同一 session 自动重连，不需要 localStorage 存恢复信息。
   - 内置 WebRTC 诊断面板，展示版本号、编译时间、ICE/PC 状态、轨道数、视频 codec、视频码率、连接上下行带宽和当前是否使用 TURN。
   - 提供网络环境诊断入口，可通过 ICE candidate 采集估算当前网络穿透风险。
@@ -102,11 +102,11 @@ public/
    - **Build command**: `npm run build`
    - **Build output directory**: `dist`
 4. **环境变量配置 (Environment variables)**：
-   *为了保证跨网络/跨运营商设备能够成功建立视频流，建议配置 TURN 服务器。初次连接仍会优先 STUN 直连；检测到直连失败后，页面会自动启用 TURN 并重连。*
+   *为了保证跨网络/跨运营商设备能够成功建立视频流，建议配置 TURN 服务器。默认构建会在初始连接时加入 TURN 候选；如需排障，也可以通过 URL 或环境变量关闭 TURN 或强制 relay。*
    - `VITE_TURN_URLS`：TURN 服务器地址，多个用逗号分隔（例：`turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp`）
    - `VITE_TURN_USERNAME`：TURN 用户名
    - `VITE_TURN_CREDENTIAL`：TURN 密码
-   - `VITE_TURN_MODE`：可选。默认 `off` 表示直连优先、失败后自动 fallback；`on` 表示初始连接即加入 TURN 候选；`force` 表示强制 relay，仅建议排障使用。
+   - `VITE_TURN_MODE`：可选。默认 `on` 表示初始连接即加入 TURN 候选；`off` 表示直连优先、失败后自动 fallback；`force` 表示强制 relay，仅建议排障使用。
 5. 点击 **Save and Deploy**。
 
 > **⚠️ 注意（Token 与安全）**：
@@ -144,5 +144,5 @@ public/
 ## 🤖 供 AI 助手参考的上下文 (AI Context)
 - **WebRTC 连接流**：发端在 `CallPage.tsx` 的 `useEffect` 中调用 `usePeer` 的 `callPeer`，接收端在监听到 `onIncomingCall` 时调用 `call.answer(stream)`。
 - **数据同步**：连点爱心、画质切换和加密聊天都走 PeerJS DataConnection。聊天层先交换临时 ECDH 公钥，再发送 AES-GCM 密文。
-- **TURN 策略**：默认初始 PeerJS 配置只含 STUN。`CallPage.tsx` 检测到底层传输失败后调用 `usePeer.enableTurnFallback()`，在保留 Peer ID 的前提下切换后续连接配置；caller 会重拨，callee 会等待重连。
+- **TURN 策略**：默认初始 PeerJS 配置会包含 STUN 和已配置的 TURN 候选。URL 或环境变量显式关闭 TURN 时，`CallPage.tsx` 检测到底层传输失败后调用 `usePeer.enableTurnFallback()`，在保留 Peer ID 的前提下切换后续连接配置；caller 会重拨，callee 会等待重连。
 - **环境隔离**：本项目同时兼顾了根域名部署（Cloudflare Pages）和子路径部署（GitHub Pages），在修改路由或构建配置时需同时考虑这两种情况。
