@@ -6,6 +6,7 @@ import { Input } from '../components/Input';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { buildCallSessionHash, createCallSessionId, parseCallSessionHash } from '../lib/callSession';
+import { BUILD_INFO } from '../lib/buildInfo';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -75,6 +76,7 @@ export default function Home() {
         <div className="text-center">
           <h1 className="text-4xl font-bold tracking-tight text-blue-500 mb-2">VideoChat</h1>
           <p className="text-gray-400">安全、点对点视频通话。</p>
+          <p className="mt-1 text-xs text-gray-500">v{BUILD_INFO.version} · mrtr@foxmail.com</p>
         </div>
 
         {/* Video Preview */}

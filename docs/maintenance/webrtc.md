@@ -59,7 +59,11 @@ DataConnection currently carries:
 
 Chat messages use WebRTC DataChannel transport plus an application-layer ECDH P-256 and AES-GCM exchange. This does not provide independent identity verification; it assumes the existing PeerJS/WebRTC connection is the session authority.
 
-Chat message content and drafts are memory-only. Old persisted chat keys are cleaned up opportunistically.
+Chat payloads support text, previewable image attachments, and downloadable non-image file attachments. Images are still inline chat attachments. Non-image files use a confirmation-first protocol: the sender emits an encrypted `CHAT_FILE_OFFER`, the receiver explicitly sends `CHAT_FILE_ACCEPT` or `CHAT_FILE_DECLINE`, and file bytes are only sent after acceptance as encrypted `CHAT_FILE_STREAM_CHUNK` payloads. DataConnection messages are processed through a serial queue so file chunk offset checks do not race asynchronous decrypt/write work.
+
+Non-image file offers are accepted up to 2GiB. When the browser supports the File System Access API, accepted files are streamed to the receiver's chosen disk path. Browsers without `showSaveFilePicker` fall back to memory-backed chunks and a `blob:` download URL after completion, but that memory fallback remains capped at 10MiB to avoid loading very large files into RAM. Regular `CHAT_MESSAGE` payloads must not carry non-image file `dataUrl` values.
+
+Chat message content, file data, and drafts are memory-only. Old persisted chat keys are cleaned up opportunistically. Do not add localStorage persistence for attachments without an explicit privacy/product decision.
 
 ## TURN Operations Notes
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_CHAT_ATTACHMENT_NAME_CHARS,
+  MAX_CHAT_MEMORY_FILE_FALLBACK_BYTES,
   MAX_CHAT_MESSAGES,
+  MAX_CHAT_FILE_BYTES,
   MAX_CHAT_IMAGE_BYTES,
   MAX_CHAT_IMAGE_DATA_URL_CHARS,
   MAX_CHAT_STORAGE_CHARS,
@@ -27,6 +30,12 @@ describe('chatStorage', () => {
   it('allows 10MiB source images and enough base64 data URL space', () => {
     expect(MAX_CHAT_IMAGE_BYTES).toBe(10 * 1024 * 1024);
     expect(MAX_CHAT_IMAGE_DATA_URL_CHARS).toBeGreaterThan(Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4);
+  });
+
+  it('allows 2GiB source files while keeping the memory fallback capped', () => {
+    expect(MAX_CHAT_FILE_BYTES).toBe(2 * 1024 * 1024 * 1024);
+    expect(MAX_CHAT_MEMORY_FILE_FALLBACK_BYTES).toBe(10 * 1024 * 1024);
+    expect(MAX_CHAT_ATTACHMENT_NAME_CHARS).toBe(255);
   });
 
   it('creates a stable conversation id independent of peer order', () => {

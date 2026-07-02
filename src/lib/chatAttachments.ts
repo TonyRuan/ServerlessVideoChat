@@ -35,6 +35,19 @@ export function getImageFileFromFiles(files: ArrayLike<File>) {
   return null;
 }
 
+export function getFileFromFiles(files: ArrayLike<File>) {
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    if (file) return file;
+  }
+
+  return null;
+}
+
 export function getImageFileFromDataTransfer(dataTransfer: Pick<DataTransfer, 'files'>) {
   return getImageFileFromFiles(dataTransfer.files);
+}
+
+export function getFileFromDataTransfer(dataTransfer: Pick<DataTransfer, 'files'>) {
+  return getFileFromFiles(dataTransfer.files);
 }

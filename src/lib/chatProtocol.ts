@@ -1,6 +1,9 @@
 import {
+  MAX_CHAT_ATTACHMENT_NAME_CHARS,
+  MAX_CHAT_FILE_BYTES,
   MAX_CHAT_IMAGE_BYTES,
   MAX_CHAT_IMAGE_DATA_URL_CHARS,
+  type ChatFileAttachment,
   type ChatImageAttachment,
   type ChatKind,
   type ChatMessage,
@@ -8,18 +11,68 @@ import {
 import { isAcceptedChatImageType } from './chatAttachments';
 import { isValidCallSessionId, isValidPeerId, type CallSessionRole } from './callSession';
 
+const FILE_MIME_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+export const CHAT_FILE_STREAM_CHUNK_BYTES = 32 * 1024;
+const CHAT_FILE_STREAM_CHUNK_DATA_CHARS = Math.ceil(CHAT_FILE_STREAM_CHUNK_BYTES / 3) * 4;
+
 export interface WireChatMessage {
   id: string;
   from: string;
   kind: ChatKind;
   text?: string;
   image?: ChatImageAttachment;
+  file?: ChatFileAttachment;
   createdAt: number;
 }
 
 export interface WireChatPayload {
   type: 'CHAT_MESSAGE';
   message: WireChatMessage;
+}
+
+export type WireChatFileSaveMode = 'file-system' | 'memory';
+
+export type WireChatFileMetadata = Omit<ChatFileAttachment, 'dataUrl' | 'objectUrl'>;
+
+export interface WireChatFileOfferPayload {
+  type: 'CHAT_FILE_OFFER';
+  version: 1;
+  transferId: string;
+  from: string;
+  message: {
+    id: string;
+    kind: 'file' | 'mixed';
+    text?: string;
+    createdAt: number;
+    file: WireChatFileMetadata;
+  };
+}
+
+export interface WireChatFileAcceptPayload {
+  type: 'CHAT_FILE_ACCEPT';
+  version: 1;
+  transferId: string;
+  from: string;
+  saveMode: WireChatFileSaveMode;
+}
+
+export interface WireChatFileDeclinePayload {
+  type: 'CHAT_FILE_DECLINE';
+  version: 1;
+  transferId: string;
+  from: string;
+}
+
+export interface WireChatFileChunkPayload {
+  type: 'CHAT_FILE_STREAM_CHUNK';
+  version: 1;
+  transferId: string;
+  from: string;
+  chunk: {
+    index: number;
+    offset: number;
+    data: string;
+  };
 }
 
 export interface SessionResumePayload {
@@ -31,6 +84,10 @@ export interface SessionResumePayload {
 }
 
 export function createWireChatMessage(message: ChatMessage, from: string): WireChatPayload {
+  if (message.file || message.kind === 'file') {
+    throw new Error('File messages must use the file transfer offer protocol');
+  }
+
   return {
     type: 'CHAT_MESSAGE',
     message: {
@@ -40,6 +97,80 @@ export function createWireChatMessage(message: ChatMessage, from: string): WireC
       text: message.text,
       image: message.image,
       createdAt: message.createdAt,
+    },
+  };
+}
+
+export function createWireChatFileOffer(message: ChatMessage, from: string): WireChatFileOfferPayload {
+  if (!message.file || message.image || (message.kind !== 'file' && message.kind !== 'mixed')) {
+    throw new Error('Message is not a file transfer');
+  }
+
+  const kind: 'file' | 'mixed' = message.kind;
+  return {
+    type: 'CHAT_FILE_OFFER',
+    version: 1,
+    transferId: message.id,
+    from,
+    message: {
+      id: message.id,
+      kind,
+      text: message.text,
+      createdAt: message.createdAt,
+      file: {
+        mimeType: message.file?.mimeType ?? '',
+        name: message.file?.name ?? '',
+        size: message.file?.size ?? 0,
+      },
+    },
+  };
+}
+
+export function createWireChatFileAccept(
+  transferId: string,
+  from: string,
+  saveMode: WireChatFileSaveMode
+): WireChatFileAcceptPayload {
+  return {
+    type: 'CHAT_FILE_ACCEPT',
+    version: 1,
+    transferId,
+    from,
+    saveMode,
+  };
+}
+
+export function createWireChatFileDecline(transferId: string, from: string): WireChatFileDeclinePayload {
+  return {
+    type: 'CHAT_FILE_DECLINE',
+    version: 1,
+    transferId,
+    from,
+  };
+}
+
+export function createWireChatFileStreamChunk({
+  transferId,
+  from,
+  index,
+  offset,
+  data,
+}: {
+  transferId: string;
+  from: string;
+  index: number;
+  offset: number;
+  data: string;
+}): WireChatFileChunkPayload {
+  return {
+    type: 'CHAT_FILE_STREAM_CHUNK',
+    version: 1,
+    transferId,
+    from,
+    chunk: {
+      index,
+      offset,
+      data,
     },
   };
 }
@@ -79,6 +210,45 @@ function isChatImageAttachment(image: unknown): image is ChatImageAttachment {
   );
 }
 
+function getBase64DecodedByteLength(body: string) {
+  if (body.length === 0 || body.length % 4 !== 0) return null;
+
+  const padding = body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0;
+  const dataEnd = body.length - padding;
+
+  for (let index = 0; index < dataEnd; index += 1) {
+    const code = body.charCodeAt(index);
+    const isUpper = code >= 65 && code <= 90;
+    const isLower = code >= 97 && code <= 122;
+    const isDigit = code >= 48 && code <= 57;
+    const isSymbol = code === 43 || code === 47;
+    if (!isUpper && !isLower && !isDigit && !isSymbol) return null;
+  }
+
+  for (let index = dataEnd; index < body.length; index += 1) {
+    if (body[index] !== '=') return null;
+  }
+
+  return (body.length / 4) * 3 - padding;
+}
+
+function isChatFileMetadata(file: unknown): file is WireChatFileMetadata {
+  if (typeof file !== 'object' || file === null) return false;
+
+  const record = file as Record<string, unknown>;
+  return (
+    typeof record.mimeType === 'string' &&
+    FILE_MIME_TYPE_PATTERN.test(record.mimeType) &&
+    typeof record.name === 'string' &&
+    record.name.trim().length > 0 &&
+    record.name.length <= MAX_CHAT_ATTACHMENT_NAME_CHARS &&
+    typeof record.size === 'number' &&
+    Number.isInteger(record.size) &&
+    record.size > 0 &&
+    record.size <= MAX_CHAT_FILE_BYTES
+  );
+}
+
 export function isWireChatPayload(payload: unknown): payload is WireChatPayload {
   if (typeof payload !== 'object' || payload === null) return false;
 
@@ -90,14 +260,85 @@ export function isWireChatPayload(payload: unknown): payload is WireChatPayload 
   if (typeof message.id !== 'string') return false;
   if (typeof message.from !== 'string') return false;
   if (typeof message.createdAt !== 'number') return false;
-  if (message.kind !== 'text' && message.kind !== 'image' && message.kind !== 'mixed') return false;
+  if (message.kind !== 'text' && message.kind !== 'image' && message.kind !== 'file' && message.kind !== 'mixed') return false;
 
   const hasText = typeof message.text === 'string' && message.text.trim().length > 0;
   const hasImage = isChatImageAttachment(message.image);
 
-  if (message.kind === 'text') return hasText && !message.image;
-  if (message.kind === 'image') return hasImage && !hasText;
+  if (message.image !== undefined && !hasImage) return false;
+  if (message.file !== undefined) return false;
+  if (message.kind === 'text') return hasText && !message.image && !message.file;
+  if (message.kind === 'image') return hasImage && !hasText && !message.file;
+  if (message.kind === 'file') return false;
   return hasText && hasImage;
+}
+
+function isNonEmptyString(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function isWireChatFileOfferPayload(payload: unknown): payload is WireChatFileOfferPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  if (record.type !== 'CHAT_FILE_OFFER' || record.version !== 1) return false;
+  if (!isNonEmptyString(record.transferId) || !isNonEmptyString(record.from)) return false;
+  if (typeof record.message !== 'object' || record.message === null) return false;
+
+  const message = record.message as Record<string, unknown>;
+  if (message.id !== record.transferId) return false;
+  if (message.kind !== 'file' && message.kind !== 'mixed') return false;
+  if (typeof message.createdAt !== 'number') return false;
+
+  const hasText = typeof message.text === 'string' && message.text.trim().length > 0;
+  if (message.kind === 'file' && message.text !== undefined) return false;
+  if (message.kind === 'mixed' && !hasText) return false;
+  return isChatFileMetadata(message.file);
+}
+
+export function isWireChatFileAcceptPayload(payload: unknown): payload is WireChatFileAcceptPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_FILE_ACCEPT' &&
+    record.version === 1 &&
+    isNonEmptyString(record.transferId) &&
+    isNonEmptyString(record.from) &&
+    (record.saveMode === 'file-system' || record.saveMode === 'memory')
+  );
+}
+
+export function isWireChatFileDeclinePayload(payload: unknown): payload is WireChatFileDeclinePayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_FILE_DECLINE' &&
+    record.version === 1 &&
+    isNonEmptyString(record.transferId) &&
+    isNonEmptyString(record.from)
+  );
+}
+
+export function isWireChatFileChunkPayload(payload: unknown): payload is WireChatFileChunkPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  if (record.type !== 'CHAT_FILE_STREAM_CHUNK' || record.version !== 1) return false;
+  if (!isNonEmptyString(record.transferId) || !isNonEmptyString(record.from)) return false;
+  if (typeof record.chunk !== 'object' || record.chunk === null) return false;
+
+  const chunk = record.chunk as Record<string, unknown>;
+  if (typeof chunk.index !== 'number' || !Number.isSafeInteger(chunk.index)) return false;
+  if (typeof chunk.offset !== 'number' || !Number.isSafeInteger(chunk.offset)) return false;
+  if (typeof chunk.data !== 'string') return false;
+  if (chunk.index < 0 || chunk.offset < 0) return false;
+  if (chunk.offset >= MAX_CHAT_FILE_BYTES) return false;
+  if (chunk.offset !== chunk.index * CHAT_FILE_STREAM_CHUNK_BYTES) return false;
+  if (chunk.data.length <= 0 || chunk.data.length > CHAT_FILE_STREAM_CHUNK_DATA_CHARS) return false;
+  const decodedByteLength = getBase64DecodedByteLength(chunk.data);
+  return decodedByteLength !== null && decodedByteLength > 0 && decodedByteLength <= CHAT_FILE_STREAM_CHUNK_BYTES;
 }
 
 export function isSessionResumePayload(payload: unknown): payload is SessionResumePayload {
@@ -126,6 +367,7 @@ export function wireMessageToIncomingChatMessage(
     kind: payload.message.kind,
     text: payload.message.text,
     image: payload.message.image,
+    file: payload.message.file,
     createdAt: payload.message.createdAt,
     status: 'received',
   };

@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ImagePlus, LockKeyhole, Send, X } from 'lucide-react';
+import { Download, File as FileIcon, LockKeyhole, Paperclip, Send, X } from 'lucide-react';
 import { Button } from './Button';
 import { cn } from '../lib/utils';
 import { useChatStore } from '../stores/chatStore';
-import { MAX_CHAT_IMAGE_BYTES, type ChatImageAttachment } from '../lib/chatStorage';
 import {
-  ACCEPTED_CHAT_IMAGE_TYPES,
+  MAX_CHAT_ATTACHMENT_NAME_CHARS,
+  MAX_CHAT_FILE_BYTES,
+  MAX_CHAT_IMAGE_BYTES,
+  type ChatImageAttachment,
+  type ChatMessage,
+} from '../lib/chatStorage';
+import {
+  formatFileTransferBytes,
+  getFileTransferLimitLabel,
+  getMemoryFileFallbackLimitLabel,
+} from '../lib/fileTransferLimits';
+import {
+  getFileFromDataTransfer,
+  getFileFromFiles,
   getImageFileFromClipboardItems,
-  getImageFileFromDataTransfer,
-  getImageFileFromFiles,
   isAcceptedChatImageType,
 } from '../lib/chatAttachments';
 import {
@@ -29,7 +39,9 @@ interface ChatPanelProps {
   isSecure: boolean;
   connectionIssue?: string | null;
   onClose: () => void;
-  onSend: (input: { text?: string; image?: ChatImageAttachment }) => Promise<void>;
+  onSend: (input: { text?: string; image?: ChatImageAttachment; file?: File }) => Promise<void>;
+  onAcceptFileTransfer: (messageId: string) => Promise<void>;
+  onDeclineFileTransfer: (messageId: string) => Promise<void>;
 }
 
 const formatTime = (timestamp: number) => {
@@ -45,12 +57,10 @@ const getFallbackImageName = (file: File) => {
   return `clipboard-image.${extension}`;
 };
 
-const formatImageSize = (bytes: number) => {
-  if (bytes >= BYTES_PER_MIB) {
-    return `${(bytes / BYTES_PER_MIB).toFixed(bytes >= 10 * BYTES_PER_MIB ? 0 : 1)} MB`;
-  }
+const getFallbackFileName = (file: File) => file.name || 'attachment';
 
-  return `${Math.ceil(bytes / 1024)} KB`;
+const formatAttachmentSize = (bytes: number) => {
+  return formatFileTransferBytes(bytes);
 };
 
 const hasDraggedFiles = (dataTransfer: DataTransfer) => Array.from(dataTransfer.types).includes('Files');
@@ -59,6 +69,11 @@ const readImageAttachment = (file: File): Promise<ChatImageAttachment> => {
   return new Promise((resolve, reject) => {
     if (!isAcceptedChatImageType(file.type)) {
       reject(new Error('仅支持 JPG、PNG、WebP 或 GIF 图片'));
+      return;
+    }
+
+    if (file.size <= 0) {
+      reject(new Error('图片不能为空'));
       return;
     }
 
@@ -86,11 +101,55 @@ const readImageAttachment = (file: File): Promise<ChatImageAttachment> => {
   });
 };
 
-export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onClose, onSend }: ChatPanelProps) {
+const validateFileForTransfer = (file: File) => {
+  const fileName = getFallbackFileName(file);
+
+  if (fileName.length > MAX_CHAT_ATTACHMENT_NAME_CHARS) {
+    throw new Error(`文件名不能超过 ${MAX_CHAT_ATTACHMENT_NAME_CHARS} 个字符`);
+  }
+
+  if (file.size <= 0) {
+    throw new Error('文件不能为空');
+  }
+
+  if (file.size > MAX_CHAT_FILE_BYTES) {
+    throw new Error(`文件不能超过 ${getFileTransferLimitLabel()}`);
+  }
+};
+
+const getFileTransferLabel = (message: ChatMessage) => {
+  const transfer = message.fileTransfer;
+  if (!transfer || !message.file) return null;
+
+  const total = message.file.size > 0 ? message.file.size : 1;
+  const percent = Math.min(100, Math.round((transfer.bytesTransferred / total) * 100));
+
+  if (transfer.status === 'waiting') return '等待对方接受';
+  if (transfer.status === 'offered') return `等待你确认接收；不支持直接保存时最多 ${getMemoryFileFallbackLimitLabel()}`;
+  if (transfer.status === 'transferring') return `传输中 ${percent}%`;
+  if (transfer.status === 'ready') return '已接收，可下载';
+  if (transfer.status === 'saved') return '已保存到磁盘';
+  if (transfer.status === 'sent') return '已发送';
+  if (transfer.status === 'rejected') return '已拒绝';
+  if (transfer.status === 'failed') return transfer.error || '传输失败';
+  return null;
+};
+
+export function ChatPanel({
+  isOpen,
+  isConnected,
+  isSecure,
+  connectionIssue,
+  onClose,
+  onSend,
+  onAcceptFileTransfer,
+  onDeclineFileTransfer,
+}: ChatPanelProps) {
   const messages = useChatStore((state) => state.messages);
   const draftText = useChatStore((state) => state.draftText);
   const setDraftText = useChatStore((state) => state.setDraftText);
   const [selectedImage, setSelectedImage] = useState<ChatImageAttachment | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewImage, setPreviewImage] = useState<ChatImageAttachment | null>(null);
   const [error, setError] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -100,15 +159,15 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
     typeof window !== 'undefined' ? window.innerWidth >= DESKTOP_MIN_WIDTH : false
   );
   const [isDragging, setIsDragging] = useState(false);
-  const [isImageDragActive, setIsImageDragActive] = useState(false);
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
   const dragOffsetRef = useRef<ChatPanelPosition | null>(null);
   const dragPositionRef = useRef<ChatPanelPosition | null>(null);
-  const imageDragDepthRef = useRef(0);
+  const fileDragDepthRef = useRef(0);
 
-  const canSend = isConnected && isSecure && !isSending && Boolean(draftText.trim() || selectedImage);
+  const canSend = isConnected && isSecure && !isSending && Boolean(draftText.trim() || selectedImage || selectedFile);
 
   useEffect(() => {
     if (isOpen) {
@@ -119,8 +178,8 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
   useEffect(() => {
     if (!isOpen) {
       setPreviewImage(null);
-      setIsImageDragActive(false);
-      imageDragDepthRef.current = 0;
+      setIsFileDragActive(false);
+      fileDragDepthRef.current = 0;
     }
   }, [isOpen]);
 
@@ -224,16 +283,24 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
 
   if (!isOpen) return null;
 
-  const handlePickImage = async (file: File | undefined) => {
+  const handlePickAttachment = async (file: File | undefined) => {
     if (!file) return;
     setError('');
 
     try {
-      const image = await readImageAttachment(file);
-      setSelectedImage(image);
+      if (isAcceptedChatImageType(file.type)) {
+        const image = await readImageAttachment(file);
+        setSelectedImage(image);
+        setSelectedFile(null);
+      } else {
+        validateFileForTransfer(file);
+        setSelectedFile(file);
+        setSelectedImage(null);
+      }
     } catch (err) {
       setSelectedImage(null);
-      setError(err instanceof Error ? err.message : '图片读取失败');
+      setSelectedFile(null);
+      setError(err instanceof Error ? err.message : '文件读取失败');
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -244,59 +311,60 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
   const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const file =
       getImageFileFromClipboardItems(event.clipboardData.items) ??
-      getImageFileFromFiles(event.clipboardData.files);
+      getFileFromFiles(event.clipboardData.files);
 
     if (!file) return;
 
     event.preventDefault();
-    await handlePickImage(file);
+    await handlePickAttachment(file);
   };
 
-  const clearImageDragState = () => {
-    imageDragDepthRef.current = 0;
-    setIsImageDragActive(false);
+  const clearFileDragState = () => {
+    fileDragDepthRef.current = 0;
+    setIsFileDragActive(false);
   };
 
-  const handleImageDragEnter = (event: React.DragEvent<HTMLElement>) => {
+  const handleFileDragEnter = (event: React.DragEvent<HTMLElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
 
     event.preventDefault();
-    imageDragDepthRef.current += 1;
-    setIsImageDragActive(true);
+    fileDragDepthRef.current += 1;
+    setIsFileDragActive(true);
   };
 
-  const handleImageDragOver = (event: React.DragEvent<HTMLElement>) => {
+  const handleFileDragOver = (event: React.DragEvent<HTMLElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
 
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
-    setIsImageDragActive(true);
+    setIsFileDragActive(true);
   };
 
-  const handleImageDragLeave = (event: React.DragEvent<HTMLElement>) => {
+  const handleFileDragLeave = (event: React.DragEvent<HTMLElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
 
     event.preventDefault();
-    imageDragDepthRef.current -= 1;
-    if (imageDragDepthRef.current <= 0) {
-      clearImageDragState();
+    fileDragDepthRef.current -= 1;
+    if (fileDragDepthRef.current <= 0) {
+      clearFileDragState();
     }
   };
 
-  const handleImageDrop = async (event: React.DragEvent<HTMLElement>) => {
+  const handleFileDrop = async (event: React.DragEvent<HTMLElement>) => {
     if (!hasDraggedFiles(event.dataTransfer)) return;
 
     event.preventDefault();
-    const file = getImageFileFromDataTransfer(event.dataTransfer);
-    clearImageDragState();
+    const file = getFileFromDataTransfer(event.dataTransfer);
+    clearFileDragState();
 
     if (!file) {
       setSelectedImage(null);
-      setError('仅支持 JPG、PNG、WebP 或 GIF 图片');
+      setSelectedFile(null);
+      setError('请选择要发送的文件');
       return;
     }
 
-    await handlePickImage(file);
+    await handlePickAttachment(file);
   };
 
   const handleSend = async () => {
@@ -308,8 +376,10 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
       await onSend({
         text: draftText,
         image: selectedImage ?? undefined,
+        file: selectedFile ?? undefined,
       });
       setSelectedImage(null);
+      setSelectedFile(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送失败');
     } finally {
@@ -327,22 +397,22 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
       <section
         ref={sectionRef}
         style={panelStyle}
-        onDragEnter={handleImageDragEnter}
-        onDragOver={handleImageDragOver}
-        onDragLeave={handleImageDragLeave}
-        onDrop={(event) => void handleImageDrop(event)}
+        onDragEnter={handleFileDragEnter}
+        onDragOver={handleFileDragOver}
+        onDragLeave={handleFileDragLeave}
+        onDrop={(event) => void handleFileDrop(event)}
         className={cn(
           'absolute inset-x-4 bottom-24 z-40 h-[62dvh] overflow-hidden rounded-xl border border-gray-700 bg-gray-900/95 text-white shadow-2xl backdrop-blur-md md:inset-x-auto md:right-4 md:top-36 md:bottom-28 md:h-auto md:w-[360px]',
           useCustomPosition && 'md:bottom-auto md:right-auto',
           isDragging && 'select-none'
         )}
       >
-        {isImageDragActive && (
+        {isFileDragActive && (
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-gray-950/75 p-4 text-center backdrop-blur-sm">
             <div className="rounded-lg border border-blue-400/60 bg-gray-900/95 px-5 py-4 shadow-xl">
-              <ImagePlus className="mx-auto h-7 w-7 text-blue-300" />
-              <p className="mt-2 text-sm font-semibold text-white">松开上传图片</p>
-              <p className="mt-1 text-xs text-gray-400">支持 JPG、PNG、WebP、GIF，最大 {MAX_CHAT_IMAGE_SIZE_MB}MB</p>
+              <Paperclip className="mx-auto h-7 w-7 text-blue-300" />
+              <p className="mt-2 text-sm font-semibold text-white">松开发送文件</p>
+              <p className="mt-1 text-xs text-gray-400">图片可预览，其他文件以下载方式接收，最大 {getFileTransferLimitLabel()}</p>
             </div>
           </div>
         )}
@@ -404,6 +474,80 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
                         <p className={cn('text-xs text-gray-400', message.text && 'mt-2')}>图片未保存在本地</p>
                       )
                     )}
+                    {message.file && (
+                      message.file.dataUrl || message.file.objectUrl ? (
+                        <a
+                          href={message.file.dataUrl ?? message.file.objectUrl}
+                          download={message.file.name}
+                          className={cn(
+                            'flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors',
+                            message.text && 'mt-2',
+                            isMine
+                              ? 'border-blue-300/40 bg-blue-500/30 text-white hover:bg-blue-500/40'
+                              : 'border-gray-700 bg-gray-900/70 text-gray-100 hover:bg-gray-900'
+                          )}
+                          title={`下载 ${message.file.name}`}
+                        >
+                          <FileIcon className="h-5 w-5 shrink-0" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">{message.file.name}</span>
+                            <span className={cn('block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
+                              {formatAttachmentSize(message.file.size)}
+                            </span>
+                          </span>
+                          <Download className="h-4 w-4 shrink-0" />
+                        </a>
+                      ) : (
+                        <div className={cn(
+                          'rounded-lg border px-2.5 py-2 text-left',
+                          message.text && 'mt-2',
+                          isMine ? 'border-blue-300/40 bg-blue-500/30' : 'border-gray-700 bg-gray-900/70'
+                        )}>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <FileIcon className="h-5 w-5 shrink-0" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium">{message.file.name}</span>
+                              <span className={cn('block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
+                                {formatAttachmentSize(message.file.size)}
+                              </span>
+                            </span>
+                          </div>
+                          {getFileTransferLabel(message) && (
+                            <p className={cn('mt-2 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
+                              {getFileTransferLabel(message)}
+                            </p>
+                          )}
+                          {message.fileTransfer?.status === 'offered' && !isMine && (
+                            <div className="mt-2 flex gap-2">
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                className="h-7 rounded-md px-2 text-xs"
+                                onClick={() => {
+                                  void onAcceptFileTransfer(message.id).catch((err) => {
+                                    setError(err instanceof Error ? err.message : '无法接收文件');
+                                  });
+                                }}
+                              >
+                                接受
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 rounded-md px-2 text-xs text-gray-300 hover:bg-gray-800"
+                                onClick={() => {
+                                  void onDeclineFileTransfer(message.id).catch((err) => {
+                                    setError(err instanceof Error ? err.message : '无法拒绝文件');
+                                  });
+                                }}
+                              >
+                                拒绝
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    )}
                     <div className={cn('mt-1 text-[10px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
                       {formatTime(message.createdAt)}
                       {isMine && message.status !== 'sent' ? ` · ${message.status === 'failed' ? '失败' : '发送中'}` : ''}
@@ -428,9 +572,24 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
               </button>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-gray-200">{selectedImage.name}</p>
-                <p className="text-[11px] text-gray-500">{formatImageSize(selectedImage.size)}</p>
+                <p className="text-[11px] text-gray-500">{formatAttachmentSize(selectedImage.size)}</p>
               </div>
               <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full text-gray-300" onClick={() => setSelectedImage(null)}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
+
+          {selectedFile && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 p-2">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded bg-gray-900 text-gray-300">
+                <FileIcon className="h-6 w-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs text-gray-200">{selectedFile.name}</p>
+                <p className="text-[11px] text-gray-500">{formatAttachmentSize(selectedFile.size)}</p>
+              </div>
+              <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full text-gray-300" onClick={() => setSelectedFile(null)}>
                 <X className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -442,17 +601,17 @@ export function ChatPanel({ isOpen, isConnected, isSecure, connectionIssue, onCl
             <input
               ref={fileInputRef}
               type="file"
-              accept={ACCEPTED_CHAT_IMAGE_TYPES.join(',')}
               className="hidden"
-              onChange={(event) => void handlePickImage(event.target.files?.[0])}
+              onChange={(event) => void handlePickAttachment(event.target.files?.[0])}
             />
             <Button
               variant="secondary"
               size="icon"
               className="h-10 w-10 rounded-full bg-gray-800 text-gray-100 hover:bg-gray-700"
               onClick={() => fileInputRef.current?.click()}
+              title="选择文件"
             >
-              <ImagePlus className="h-5 w-5" />
+              <Paperclip className="h-5 w-5" />
             </Button>
             <textarea
               value={draftText}

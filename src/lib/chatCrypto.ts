@@ -22,23 +22,6 @@ export interface ChatCryptoSession {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
-}
-
-function base64ToBytes(base64: string) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
 export function isChatCryptoKeyMessage(data: unknown): data is ChatCryptoKeyMessage {
   return (
     typeof data === 'object' &&
@@ -120,3 +103,4 @@ export async function createChatCryptoSession(): Promise<ChatCryptoSession> {
     },
   };
 }
+import { base64ToBytes, bytesToBase64 } from './base64';

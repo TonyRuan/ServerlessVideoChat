@@ -3,16 +3,44 @@ export const MAX_CHAT_MESSAGES = 200;
 export const MAX_CHAT_STORAGE_CHARS = 1_000_000;
 export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_CHAT_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4 + 128;
+export const MAX_CHAT_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_CHAT_MEMORY_FILE_FALLBACK_BYTES = 10 * 1024 * 1024;
+export const MAX_CHAT_ATTACHMENT_NAME_CHARS = 255;
 
 export type ChatDirection = 'in' | 'out';
-export type ChatKind = 'text' | 'image' | 'mixed';
+export type ChatKind = 'text' | 'image' | 'file' | 'mixed';
 export type ChatStatus = 'sending' | 'sent' | 'received' | 'failed';
+export type ChatFileTransferStatus =
+  | 'waiting'
+  | 'offered'
+  | 'transferring'
+  | 'ready'
+  | 'saved'
+  | 'sent'
+  | 'rejected'
+  | 'failed';
 
 export interface ChatImageAttachment {
   dataUrl: string;
   mimeType: string;
   name: string;
   size: number;
+}
+
+export interface ChatFileAttachment {
+  dataUrl?: string;
+  objectUrl?: string;
+  mimeType: string;
+  name: string;
+  size: number;
+}
+
+export interface ChatFileTransfer {
+  id: string;
+  status: ChatFileTransferStatus;
+  bytesTransferred: number;
+  error?: string;
+  saveMode?: 'file-system' | 'memory';
 }
 
 export interface ChatMessage {
@@ -22,6 +50,8 @@ export interface ChatMessage {
   kind: ChatKind;
   text?: string;
   image?: ChatImageAttachment;
+  file?: ChatFileAttachment;
+  fileTransfer?: ChatFileTransfer;
   createdAt: number;
   status: ChatStatus;
 }

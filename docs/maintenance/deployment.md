@@ -69,4 +69,5 @@ After deploy:
 - Verify returned Pages URL status `200`.
 - Verify custom domain if this is meant to update production.
 - Check that asset URLs use root paths on Cloudflare Pages, not `/ServerlessVideoChat/`.
+- For file-transfer changes, verify the returned Pages URL and `https://chat.uavserver.cn` are HTTPS, then smoke-test the browser capability split: Chrome/Edge can use direct disk save for files over 10MiB, while browsers without `showSaveFilePicker` reject files over the 10MiB memory fallback with a clear message.
 - Do not publish Cloudflare token or TURN credential values in logs, screenshots, commit messages, or chat output.

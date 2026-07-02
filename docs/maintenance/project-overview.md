@@ -23,7 +23,7 @@ Session state lives in the URL hash. Do not move meeting recovery state to long-
 
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.
-- Encrypted text/image chat over WebRTC DataConnection.
+- Encrypted text/image/file chat over WebRTC DataConnection. Non-image files require receiver acceptance before encrypted chunk streaming begins; capable browsers save directly to disk, otherwise completed files become download cards. Chat is not persisted to local storage.
 - Double-click heart reactions.
 - Compact diagnostics panel with expandable full debug details.
 - Invite link with QR code for phone join flow.
@@ -48,7 +48,7 @@ Session state lives in the URL hash. Do not move meeting recovery state to long-
 - WebRTC connection success still depends on browser, network, NAT, firewall, TURN reachability, and media permission.
 - DataConnection reconnect handling is limited beyond the direct-to-TURN fallback path.
 - Chat contents and drafts are memory-only by design; refresh or close clears them.
-- Large image/GIF messages can delay lower-priority data-channel control messages.
+- Large image/GIF/file messages can delay lower-priority data-channel control messages. Non-image files are capped at 2GiB, but unsupported browsers still cap the memory-backed download fallback at 10MiB.
 - Browser UI validation may stop at a permission-denied screen unless fake media devices or explicit user permission are available.
 
 ## Documentation Maintenance

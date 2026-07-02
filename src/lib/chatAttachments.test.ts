@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getImageFileFromClipboardItems, getImageFileFromDataTransfer, isAcceptedChatImageType } from './chatAttachments';
+import {
+  getFileFromDataTransfer,
+  getFileFromFiles,
+  getImageFileFromClipboardItems,
+  getImageFileFromDataTransfer,
+  isAcceptedChatImageType,
+} from './chatAttachments';
 
 const makeItem = (kind: string, type: string, file: File | null) => ({
   kind,
@@ -51,6 +57,18 @@ describe('chatAttachments', () => {
     } as unknown as DataTransfer);
 
     expect(selected).toBeNull();
+  });
+
+  it('returns the first file from generic file lists', () => {
+    const pdfFile = new File(['pdf'], 'brief.pdf', { type: 'application/pdf' });
+    const zipFile = new File(['zip'], 'logs.zip', { type: 'application/zip' });
+
+    expect(getFileFromFiles([pdfFile, zipFile])).toBe(pdfFile);
+    expect(
+      getFileFromDataTransfer({
+        files: [pdfFile, zipFile],
+      } as unknown as DataTransfer)
+    ).toBe(pdfFile);
   });
 
   it('accepts the same image types used by chat payload validation', () => {
