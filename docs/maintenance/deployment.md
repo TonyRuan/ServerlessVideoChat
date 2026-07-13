@@ -16,6 +16,8 @@ Build before deploying:
 npm run build
 ```
 
+The regular build runs `scripts/prepareCloudflarePages.mjs` after Vite and removes the GitHub Pages-specific `dist/404.html`. Cloudflare Pages only enables its automatic SPA fallback when no top-level `404.html` is present. `npm run build:github` does not run this cleanup and therefore keeps the GitHub redirect page.
+
 Deploy the current local `dist` to Cloudflare Pages:
 
 ```powershell
@@ -41,6 +43,7 @@ Expected status is `200`. For full app confidence, open the returned URL and `ht
 
 - Cloudflare Pages uses `public/_redirects`.
 - GitHub Pages uses `public/404.html`.
+- The Cloudflare postbuild step removes `dist/404.html`; do not remove that cleanup unless direct `/call/...` requests are verified to return the SPA with status `200`.
 
 Do not break root-path behavior for Cloudflare Pages when changing `vite.config.ts` or router setup.
 
