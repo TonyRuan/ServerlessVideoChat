@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import tsconfigPaths from "vite-tsconfig-paths";
 
 // https://vite.dev/config/
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
   const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
     version?: string;
   };
@@ -16,13 +16,13 @@ export default defineConfig(() => {
       __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     },
     build: {
-      sourcemap: 'hidden',
+      sourcemap: false,
     },
     plugins: [
       react({
         babel: {
           plugins: [
-            'react-dev-locator',
+            ...(mode === 'development' ? ['react-dev-locator'] : []),
           ],
         },
       }),

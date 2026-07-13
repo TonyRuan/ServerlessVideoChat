@@ -30,18 +30,20 @@ export function SettingsMenu({
         className="rounded-full h-12 w-12 bg-gray-700 hover:bg-gray-600"
         onClick={() => setIsOpen(!isOpen)}
         disabled={disabled}
-        title="Settings"
+        aria-label="通话设置"
+        aria-expanded={isOpen}
       >
         <Settings className="h-5 w-5 text-white" />
       </Button>
 
       {isOpen && (
-        <div className="absolute bottom-16 right-0 w-56 bg-gray-800 rounded-lg shadow-xl ring-1 ring-black ring-opacity-5 z-50 overflow-hidden">
+        <div className="absolute bottom-16 right-0 w-56 bg-gray-800 rounded-lg shadow-xl ring-1 ring-black ring-opacity-5 z-50 overflow-hidden" role="menu" aria-label="通话设置">
           {/* Display Mode Section */}
           <div className="p-2 border-b border-gray-700">
             <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 mb-2">Display Mode</h3>
             <div className="space-y-1">
               <button
+                type="button"
                 onClick={() => {
                   onVideoFitModeChange('cover');
                   setIsOpen(false);
@@ -51,11 +53,13 @@ export function SettingsMenu({
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-300 hover:bg-gray-700'
                 }`}
+                aria-pressed={videoFitMode === 'cover'}
               >
                 <span>Full Screen (Cover)</span>
                 {videoFitMode === 'cover' && <Check className="h-4 w-4" />}
               </button>
               <button
+                type="button"
                 onClick={() => {
                   onVideoFitModeChange('contain');
                   setIsOpen(false);
@@ -65,6 +69,7 @@ export function SettingsMenu({
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-300 hover:bg-gray-700'
                 }`}
+                aria-pressed={videoFitMode === 'contain'}
               >
                 <span>Fit Screen (Contain)</span>
                 {videoFitMode === 'contain' && <Check className="h-4 w-4" />}
@@ -78,6 +83,7 @@ export function SettingsMenu({
             <div className="space-y-1">
               {VIDEO_QUALITIES.map((quality) => (
                 <button
+                  type="button"
                   key={quality.label}
                   onClick={() => {
                     onQualityChange(quality);
@@ -88,6 +94,7 @@ export function SettingsMenu({
                       ? 'bg-blue-600 text-white'
                       : 'text-gray-300 hover:bg-gray-700'
                   }`}
+                  aria-pressed={currentQuality.label === quality.label}
                 >
                   <span>{quality.label}</span>
                   {currentQuality.label === quality.label && (

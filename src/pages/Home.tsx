@@ -5,13 +5,15 @@ import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
 import { useMediaStream } from '../hooks/useMediaStream';
-import { buildCallSessionHash, createCallSessionId, parseCallSessionHash } from '../lib/callSession';
+import { buildCallSessionHash, createCallSessionId, parseInviteInput } from '../lib/callSession';
 import { BUILD_INFO } from '../lib/buildInfo';
+import logoUrl from '../assets/serverless-video-chat-logo.png';
 
 export default function Home() {
   const navigate = useNavigate();
   const { stream, error, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo, currentQuality, changeQuality } = useMediaStream();
   const [meetingId, setMeetingId] = useState('');
+  const [joinError, setJoinError] = useState('');
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
@@ -31,49 +33,29 @@ export default function Home() {
 
   const handleJoinMeeting = (e: React.FormEvent) => {
     e.preventDefault();
-    let id = meetingId.trim();
-    if (!id) return;
-    let callSessionHash = buildCallSessionHash({ sessionId: createCallSessionId(), role: 'guest' });
-
-    // Enhanced URL parsing logic
-    try {
-      // 1. Try to treat input as a full URL
-      const url = new URL(id.startsWith('http') ? id : `https://${id}`);
-      const parsedSession = parseCallSessionHash(url.hash);
-      if (parsedSession) {
-        callSessionHash = buildCallSessionHash({ ...parsedSession, role: 'guest' });
-      }
-      const pathParts = url.pathname.split('/');
-      // Find the segment after 'call'
-      const callIndex = pathParts.findIndex(part => part === 'call');
-      if (callIndex !== -1 && callIndex + 1 < pathParts.length) {
-        id = pathParts[callIndex + 1];
-      } else {
-        // Fallback: take the last non-empty segment
-        const lastSegment = pathParts.filter(p => p).pop();
-        if (lastSegment) id = lastSegment;
-      }
-    } catch {
-      // 2. If URL parsing fails, check for simple pattern match
-      const match = id.match(/\/call\/([a-zA-Z0-9-]+)/);
-      if (match && match[1]) {
-        id = match[1];
-      }
+    const invite = parseInviteInput(meetingId);
+    if (!invite) {
+      setJoinError('请输入完整、有效的会议邀请链接');
+      return;
     }
 
-    // Clean up any remaining URL artifacts if present
-    if (id.includes('/')) {
-        const parts = id.split('/');
-        id = parts[parts.length - 1];
-    }
-
-    navigate(`/call/${id}${callSessionHash}`);
+    setJoinError('');
+    navigate(`/call/${invite.peerId}${buildCallSessionHash({
+      sessionId: invite.sessionId,
+      role: 'guest',
+    })}`);
   };
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
         <div className="text-center">
+          <img
+            src={logoUrl}
+            alt=""
+            aria-hidden="true"
+            className="mx-auto mb-4 h-16 w-16 object-contain sm:h-20 sm:w-20"
+          />
           <h1 className="text-4xl font-bold tracking-tight text-blue-500 mb-2">VideoChat</h1>
           <p className="text-gray-400">安全、点对点视频通话。</p>
           <p className="mt-1 text-xs text-gray-500">v{BUILD_INFO.version} · mrtr@foxmail.com</p>
@@ -115,6 +97,8 @@ export default function Home() {
               className="rounded-full h-12 w-12"
               onClick={toggleAudio}
               disabled={!stream}
+              aria-label={isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
+              aria-pressed={isAudioEnabled}
             >
               {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
             </Button>
@@ -124,6 +108,8 @@ export default function Home() {
               className="rounded-full h-12 w-12"
               onClick={toggleVideo}
               disabled={!stream}
+              aria-label={isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
+              aria-pressed={isVideoEnabled}
             >
               {isVideoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
             </Button>
@@ -153,25 +139,32 @@ export default function Home() {
               <span className="w-full border-t border-gray-700" />
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-gray-900 px-2 text-gray-500">或者使用代码加入</span>
+              <span className="bg-gray-900 px-2 text-gray-500">或者使用邀请链接加入</span>
             </div>
           </div>
 
-          <form onSubmit={handleJoinMeeting} className="flex gap-2">
+          <form onSubmit={handleJoinMeeting} className="space-y-2">
+            <div className="flex gap-2">
             <Input
-              placeholder="输入会议代码"
+              placeholder="粘贴完整会议邀请链接"
+              aria-label="会议邀请链接"
               value={meetingId}
-              onChange={(e) => setMeetingId(e.target.value)}
-              className="bg-gray-800 border-gray-700 text-white focus:ring-blue-500 h-12"
+              onChange={(e) => {
+                setMeetingId(e.target.value);
+                if (joinError) setJoinError('');
+              }}
+              className="min-w-0 bg-gray-800 border-gray-700 text-white focus:ring-blue-500 h-12"
             />
             <Button 
               type="submit" 
               variant="secondary" 
-              className="h-12 px-6"
+              className="h-12 shrink-0 whitespace-nowrap px-6"
               disabled={!meetingId.trim() || (!stream && !error)}
             >
               加入
             </Button>
+            </div>
+            {joinError && <p className="text-sm text-red-400" role="alert">{joinError}</p>}
           </form>
         </div>
       </div>

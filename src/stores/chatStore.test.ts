@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { MAX_CHAT_MESSAGES } from '../lib/chatStorage';
 import { useChatStore } from './chatStore';
 
 const resetChatStore = () => {
@@ -184,6 +185,40 @@ describe('chatStore', () => {
     expect(useChatStore.getState().messages[0].file?.objectUrl).toBe('blob:download');
   });
 
+  it('recreates transfer state when updating an existing file message without transfer metadata', () => {
+    const { setConversationPeers, addIncomingWireMessage, updateFileTransfer } = useChatStore.getState();
+
+    setConversationPeers('local-peer', 'remote-peer', 'session-1');
+    addIncomingWireMessage({
+      type: 'CHAT_MESSAGE',
+      message: {
+        id: 'legacy-file-1',
+        from: 'remote-peer',
+        kind: 'file',
+        file: {
+          dataUrl: 'data:application/octet-stream;base64,YQ==',
+          mimeType: 'application/octet-stream',
+          name: 'legacy.bin',
+          size: 1,
+        },
+        createdAt: 123,
+      },
+    });
+
+    updateFileTransfer('legacy-file-1', {
+      status: 'ready',
+      bytesTransferred: 1,
+      file: { objectUrl: 'blob:legacy' },
+    });
+
+    expect(useChatStore.getState().messages[0].fileTransfer).toMatchObject({
+      id: 'legacy-file-1',
+      status: 'ready',
+      bytesTransferred: 1,
+    });
+    expect(useChatStore.getState().messages[0].file?.objectUrl).toBe('blob:legacy');
+  });
+
   it('revokes object URLs when file downloads are replaced or cleared', () => {
     const revokeObjectURL = vi.fn();
     Object.defineProperty(URL, 'revokeObjectURL', {
@@ -224,5 +259,141 @@ describe('chatStore', () => {
 
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:first');
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:second');
+  });
+
+  it('caps local messages and revokes only blob URLs evicted from memory', () => {
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: revokeObjectURL,
+      configurable: true,
+    });
+    const { setConversationPeers, createLocalMessage } = useChatStore.getState();
+
+    setConversationPeers('local-peer', 'remote-peer', 'session-1');
+    for (let index = 0; index < MAX_CHAT_MESSAGES + 2; index += 1) {
+      createLocalMessage({
+        myPeerId: 'local-peer',
+        id: `local-${index}`,
+        file: {
+          mimeType: 'application/octet-stream',
+          name: `local-${index}.bin`,
+          size: 1,
+          objectUrl: index === 0 ? 'blob:evicted-local' : index === 1 ? 'https://example.com/file' : undefined,
+        },
+      });
+    }
+
+    const messages = useChatStore.getState().messages;
+    expect(messages).toHaveLength(MAX_CHAT_MESSAGES);
+    expect(messages[0].id).toBe('local-2');
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:evicted-local');
+  });
+
+  it('caps incoming wire messages', () => {
+    const { setConversationPeers, addIncomingWireMessage } = useChatStore.getState();
+
+    setConversationPeers('local-peer', 'remote-peer', 'session-1');
+    for (let index = 0; index < MAX_CHAT_MESSAGES + 1; index += 1) {
+      addIncomingWireMessage({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: `incoming-${index}`,
+          from: 'remote-peer',
+          kind: 'text',
+          text: `message ${index}`,
+          createdAt: index,
+        },
+      });
+    }
+
+    const messages = useChatStore.getState().messages;
+    expect(messages).toHaveLength(MAX_CHAT_MESSAGES);
+    expect(messages[0].id).toBe('incoming-1');
+  });
+
+  it('caps incoming file offers and revokes an evicted download URL', () => {
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: revokeObjectURL,
+      configurable: true,
+    });
+    const { setConversationPeers, createLocalMessage, addIncomingFileOffer } = useChatStore.getState();
+
+    setConversationPeers('local-peer', 'remote-peer', 'session-1');
+    createLocalMessage({
+      myPeerId: 'local-peer',
+      id: 'download-to-evict',
+      file: {
+        mimeType: 'application/octet-stream',
+        name: 'download.bin',
+        size: 1,
+        objectUrl: 'blob:evicted-download',
+      },
+    });
+
+    for (let index = 0; index < MAX_CHAT_MESSAGES; index += 1) {
+      addIncomingFileOffer({
+        type: 'CHAT_FILE_OFFER',
+        version: 1,
+        transferId: `transfer-${index}`,
+        from: 'remote-peer',
+        message: {
+          id: `transfer-${index}`,
+          kind: 'file',
+          createdAt: index,
+          file: {
+            mimeType: 'application/octet-stream',
+            name: `transfer-${index}.bin`,
+            size: 1,
+          },
+        },
+      });
+    }
+
+    const messages = useChatStore.getState().messages;
+    expect(messages).toHaveLength(MAX_CHAT_MESSAGES);
+    expect(messages[0].id).toBe('transfer-0');
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:evicted-download');
+  });
+
+  it('replaces an existing message without evicting another message', () => {
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      value: revokeObjectURL,
+      configurable: true,
+    });
+    const { setConversationPeers, createLocalMessage, addIncomingWireMessage } = useChatStore.getState();
+
+    setConversationPeers('local-peer', 'remote-peer', 'session-1');
+    for (let index = 0; index < MAX_CHAT_MESSAGES; index += 1) {
+      createLocalMessage({
+        myPeerId: 'local-peer',
+        id: `message-${index}`,
+        text: `local ${index}`,
+      });
+    }
+
+    addIncomingWireMessage({
+      type: 'CHAT_MESSAGE',
+      message: {
+        id: 'message-100',
+        from: 'remote-peer',
+        kind: 'text',
+        text: 'replacement',
+        createdAt: 999,
+      },
+    });
+
+    const messages = useChatStore.getState().messages;
+    expect(messages).toHaveLength(MAX_CHAT_MESSAGES);
+    expect(messages[0].id).toBe('message-0');
+    expect(messages.at(-1)?.id).toBe(`message-${MAX_CHAT_MESSAGES - 1}`);
+    expect(messages.find((message) => message.id === 'message-100')).toMatchObject({
+      direction: 'in',
+      text: 'replacement',
+    });
+    expect(revokeObjectURL).not.toHaveBeenCalled();
   });
 });

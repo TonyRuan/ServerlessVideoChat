@@ -6,6 +6,11 @@ export interface CallSessionState {
   peerId?: string;
 }
 
+export interface ParsedInviteInput {
+  peerId: string;
+  sessionId: string;
+}
+
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
 const SAFE_PEER_ID_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
 
@@ -48,6 +53,55 @@ export function parseCallSessionHash(hash: string): CallSessionState | null {
     sessionId,
     role: normalizeRole(params.get('role')),
     ...(peerId && isValidPeerId(peerId) ? { peerId } : {}),
+  };
+}
+
+export function resolveCallSessionState(
+  hash: string,
+  current: CallSessionState,
+  activePeerId?: string
+): CallSessionState {
+  const parsed = parseCallSessionHash(hash) ?? current;
+  const peerId = activePeerId ?? parsed.peerId ?? current.peerId;
+
+  return {
+    sessionId: parsed.sessionId,
+    role: parsed.role,
+    ...(peerId ? { peerId } : {}),
+  };
+}
+
+export function parseInviteInput(input: string): ParsedInviteInput | null {
+  const normalizedInput = input.trim();
+  if (!/^https?:\/\//i.test(normalizedInput)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(normalizedInput);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+
+  const pathMatch = url.pathname.match(/(?:^|\/)call\/([^/]+)\/?$/);
+  if (!pathMatch) return null;
+
+  let peerId: string;
+  try {
+    peerId = decodeURIComponent(pathMatch[1]);
+  } catch {
+    return null;
+  }
+
+  if (!isValidPeerId(peerId)) return null;
+
+  const session = parseCallSessionHash(url.hash);
+  if (!session) return null;
+
+  return {
+    peerId,
+    sessionId: session.sessionId,
   };
 }
 

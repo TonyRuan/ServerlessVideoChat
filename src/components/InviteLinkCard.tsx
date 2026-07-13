@@ -19,7 +19,7 @@ export function InviteLinkCard({ inviteLink, copied, onCopy }: InviteLinkCardPro
           className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300 focus:outline-none"
           aria-label="会议邀请链接"
         />
-        <Button onClick={onCopy} variant="secondary" size="icon" title="复制邀请链接">
+        <Button onClick={onCopy} variant="secondary" size="icon" aria-label="复制邀请链接">
           {copied ? <Share2 className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
         </Button>
       </div>

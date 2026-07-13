@@ -1,3 +1,5 @@
+import { base64ToBytes, bytesToBase64 } from './base64';
+
 export interface ChatCryptoKeyMessage {
   type: 'CHAT_CRYPTO_KEY';
   version: 1;
@@ -11,16 +13,31 @@ export interface EncryptedChatEnvelope {
   data: string;
 }
 
+export interface EncryptedBinaryChatEnvelope {
+  type: 'CHAT_CIPHER_BINARY';
+  version: 1;
+  iv: Uint8Array | ArrayBuffer;
+  data: Uint8Array | ArrayBuffer;
+}
+
 export interface ChatCryptoSession {
   publicKey: JsonWebKey;
   isReady: () => boolean;
   acceptPeerPublicKey: (publicKey: JsonWebKey) => Promise<void>;
   encrypt: (payload: unknown) => Promise<EncryptedChatEnvelope>;
   decrypt: (envelope: EncryptedChatEnvelope) => Promise<unknown>;
+  encryptBytes: (payload: Uint8Array) => Promise<EncryptedBinaryChatEnvelope>;
+  decryptBytes: (envelope: EncryptedBinaryChatEnvelope) => Promise<Uint8Array>;
 }
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const binaryByteLength = (value: unknown) =>
+  value instanceof Uint8Array || value instanceof ArrayBuffer ? value.byteLength : null;
+
+const toUint8Array = (value: Uint8Array | ArrayBuffer) =>
+  value instanceof Uint8Array ? value : new Uint8Array(value);
 
 export function isChatCryptoKeyMessage(data: unknown): data is ChatCryptoKeyMessage {
   return (
@@ -40,6 +57,18 @@ export function isEncryptedChatEnvelope(data: unknown): data is EncryptedChatEnv
     (data as Record<string, unknown>).version === 1 &&
     typeof (data as Record<string, unknown>).iv === 'string' &&
     typeof (data as Record<string, unknown>).data === 'string'
+  );
+}
+
+export function isEncryptedBinaryChatEnvelope(data: unknown): data is EncryptedBinaryChatEnvelope {
+  if (typeof data !== 'object' || data === null) return false;
+
+  const record = data as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_CIPHER_BINARY' &&
+    record.version === 1 &&
+    binaryByteLength(record.iv) === 12 &&
+    (binaryByteLength(record.data) ?? 0) > 16
   );
 }
 
@@ -101,6 +130,26 @@ export async function createChatCryptoSession(): Promise<ChatCryptoSession> {
       );
       return JSON.parse(decoder.decode(plaintext));
     },
+    encryptBytes: async (payload) => {
+      const key = requireSharedKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, payload);
+
+      return {
+        type: 'CHAT_CIPHER_BINARY',
+        version: 1,
+        iv,
+        data: new Uint8Array(ciphertext),
+      };
+    },
+    decryptBytes: async (envelope) => {
+      const key = requireSharedKey();
+      const plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: toUint8Array(envelope.iv) },
+        key,
+        toUint8Array(envelope.data)
+      );
+      return new Uint8Array(plaintext);
+    },
   };
 }
-import { base64ToBytes, bytesToBase64 } from './base64';

@@ -1,51 +1,79 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, PhoneOff, Loader2, Volume2, VolumeX, MessageCircle } from 'lucide-react';
+import { Loader2, Volume2, VolumeX } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
 import { Button } from '../components/Button';
-import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
+import type { VideoFitMode } from '../components/SettingsMenu';
+import { CallControls } from '../components/CallControls';
 import { ChatPanel } from '../components/ChatPanel';
 import { InviteLinkCard } from '../components/InviteLinkCard';
 import { NetworkDiagnosticsPanel } from '../components/NetworkDiagnosticsPanel';
-import { useMediaStream, type VideoQuality } from '../hooks/useMediaStream';
+import { useMediaStream, VIDEO_QUALITIES, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
-import { useHeartStore, type HeartData } from '../stores/heartStore';
+import { useAutoHideControls } from '../hooks/useAutoHideControls';
+import { useHeartStore } from '../stores/heartStore';
 import { useChatStore } from '../stores/chatStore';
 import type { ChatFileAttachment, ChatImageAttachment } from '../lib/chatStorage';
 import {
   createChatCryptoSession,
   isChatCryptoKeyMessage,
+  isEncryptedBinaryChatEnvelope,
   isEncryptedChatEnvelope,
   type ChatCryptoSession,
 } from '../lib/chatCrypto';
 import {
   CHAT_FILE_STREAM_CHUNK_BYTES,
   createWireChatFileAccept,
+  createWireChatFileComplete,
+  createWireChatFileCredit,
   createWireChatFileDecline,
+  createWireChatFileError,
   createWireChatFileOffer,
-  createWireChatFileStreamChunk,
   createSessionResumeMessage,
   createWireChatMessage,
   isWireChatFileAcceptPayload,
-  isWireChatFileChunkPayload,
+  isWireChatFileCompletePayload,
+  isWireChatFileCreditPayload,
   isWireChatFileDeclinePayload,
+  isWireChatFileErrorPayload,
   isWireChatFileOfferPayload,
   isSessionResumePayload,
   isWireChatPayload,
-  type WireChatFileChunkPayload,
   type WireChatFileOfferPayload,
   type WireChatFileSaveMode,
 } from '../lib/chatProtocol';
-import { base64ToBytes, bytesToBase64 } from '../lib/base64';
 import {
   canUseMemoryFileFallback,
   getMemoryFileFallbackLimitLabel,
 } from '../lib/fileTransferLimits';
 import {
+  DATA_CONNECTION_BUFFER_LIMIT_BYTES,
+  sendDataConnectionPayload,
+} from '../lib/dataConnectionPayload';
+import {
+  claimOutgoingFileTransferStart,
+  shouldPublishFileTransferProgress,
+} from '../lib/fileTransferProgress';
+import {
+  decodeFileChunkFrame,
+  encodeFileChunkFrame,
+  type BinaryFileChunkFrame,
+} from '../lib/fileTransferBinary';
+import {
+  FILE_TRANSFER_CREDIT_WINDOW_BYTES,
+  advanceFileTransferWindow,
+  applyFileTransferCredit,
+  canSendFileChunk,
+  createFileTransferSendWindow,
+  resumeFileTransferWindow,
+  type FileTransferSendWindow,
+} from '../lib/fileTransferFlow';
+import {
   buildCallSessionHash,
   buildInviteLink,
   createCallSessionId,
   parseCallSessionHash,
+  resolveCallSessionState,
   type CallSessionState,
 } from '../lib/callSession';
 import {
@@ -56,8 +84,14 @@ import {
 } from '../lib/callConnectivity';
 import {
   dataReconnectDelayMs,
+  getDataConnectionChannel,
+  isIncomingConnectionMetadataValid,
   isCurrentConnection,
-  shouldAcceptIncomingSessionConnection,
+  isPayloadPeerValid,
+  isSessionResumePeerValid,
+  shouldInitiateOutgoingConnection,
+  shouldReplaceCurrentMediaConnection,
+  shouldReplaceCurrentDataConnection,
   turnFallbackRoleForSessionRole,
 } from '../lib/callConnectionPolicy';
 import {
@@ -76,23 +110,24 @@ import {
   type TurnFallbackStatus,
 } from '../lib/turnFallback';
 import { cn } from '../lib/utils';
+import { isHeartPayload, isQualityChangePayload } from '../lib/realtimeProtocol';
 
-const connectionMatchesSession = (connection: { metadata?: unknown }, sessionId: string) => {
-  const metadata = connection.metadata as Record<string, unknown> | null | undefined;
-  return metadata?.sessionId === sessionId;
-};
-
-const FILE_TRANSFER_BUFFER_LIMIT_BYTES = 256 * 1024;
 const FILE_TRANSFER_BUFFER_POLL_MS = 20;
 
 interface OutgoingFileTransferState {
   file: File;
   messageId: string;
+  isStarted: boolean;
+  window: FileTransferSendWindow;
+  lastProgressUpdateAt: number;
+  lastProgressUpdateBytes: number;
 }
 
 interface IncomingFileTransferState {
   offer: WireChatFileOfferPayload;
   bytesReceived: number;
+  lastProgressUpdateAt: number;
+  lastProgressUpdateBytes: number;
   saveMode: WireChatFileSaveMode;
   chunks?: Uint8Array[];
   writable?: FileSystemWritableFileStreamLike;
@@ -120,7 +155,7 @@ const waitForDataChannelBuffer = async (conn: DataConnection) => {
   const channel = conn.dataChannel;
   if (!channel) return;
 
-  while (conn.open && channel.readyState === 'open' && channel.bufferedAmount > FILE_TRANSFER_BUFFER_LIMIT_BYTES) {
+  while (conn.open && channel.readyState === 'open' && channel.bufferedAmount > DATA_CONNECTION_BUFFER_LIMIT_BYTES) {
     await delay(FILE_TRANSFER_BUFFER_POLL_MS);
   }
 
@@ -134,9 +169,18 @@ const sendEncryptedDataPayload = async (
   session: ChatCryptoSession,
   payload: unknown
 ) => {
-  if (!conn.open) throw new Error('聊天连接尚未建立');
   const encrypted = await session.encrypt(payload);
-  conn.send(encrypted);
+  await sendDataConnectionPayload(conn, encrypted);
+  await waitForDataChannelBuffer(conn);
+};
+
+const sendEncryptedBinaryPayload = async (
+  conn: DataConnection,
+  session: ChatCryptoSession,
+  payload: Uint8Array
+) => {
+  const encrypted = await session.encryptBytes(payload);
+  await sendDataConnectionPayload(conn, encrypted);
   await waitForDataChannelBuffer(conn);
 };
 
@@ -153,13 +197,12 @@ const fileToChatAttachment = (file: File): ChatFileAttachment => ({
   size: file.size,
 });
 
-const readFileSliceAsBase64 = async (file: File, offset: number) => {
+const isSameCallSession = (a: CallSessionState, b: CallSessionState) =>
+  a.sessionId === b.sessionId && a.role === b.role && a.peerId === b.peerId;
+
+const readFileSlice = async (file: File, offset: number) => {
   const slice = file.slice(offset, Math.min(file.size, offset + CHAT_FILE_STREAM_CHUNK_BYTES));
-  const bytes = new Uint8Array(await slice.arrayBuffer());
-  return {
-    bytes,
-    data: bytesToBase64(bytes),
-  };
+  return new Uint8Array(await slice.arrayBuffer());
 };
 
 export default function CallPage() {
@@ -225,19 +268,23 @@ export default function CallPage() {
   });
   const [remotePlayError, setRemotePlayError] = useState<string>('');
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isDataConnected, setIsDataConnected] = useState(false);
   const [isChatSecure, setIsChatSecure] = useState(false);
   const [conversationPeerId, setConversationPeerId] = useState<string | null>(remotePeerId ?? null);
   const [turnFallbackAttempted, setTurnFallbackAttempted] = useState(false);
   const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [, setMediaReconnectCount] = useState(0);
   const [dataReconnectAttempt, setDataReconnectAttempt] = useState(0);
   const [, setDataReconnectCount] = useState(0);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const mobileMorePanelRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<MediaConnection | null>(null);
   const dataConnRef = useRef<DataConnection | null>(null);
+  const bulkDataConnRef = useRef<DataConnection | null>(null);
   const connectionGenerationRef = useRef(0);
   const currentQualityRef = useRef(currentQuality);
   const inboundVideoSampleRef = useRef<VideoTransferSample | null>(null);
@@ -249,10 +296,15 @@ export default function CallPage() {
   const chatCryptoPublicKeySentRef = useRef(false);
   const callSessionRef = useRef(callSession);
   const dataReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectEnabledRef = useRef(true);
   const dataMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const bulkMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
   const outgoingFileTransfersRef = useRef<Map<string, OutgoingFileTransferState>>(new Map());
   const incomingFileOffersRef = useRef<Map<string, WireChatFileOfferPayload>>(new Map());
+  const acceptingFileTransfersRef = useRef<Set<string>>(new Set());
   const incomingFileTransfersRef = useRef<Map<string, IncomingFileTransferState>>(new Map());
+  const pendingFileCompletionsRef = useRef<Map<string, { from: string; bytesReceived: number }>>(new Map());
   
   // Heart store
   const outgoingHeart = useHeartStore(state => state.outgoingHeart);
@@ -271,50 +323,37 @@ export default function CallPage() {
   }, [callSession]);
 
   useEffect(() => {
+    reconnectEnabledRef.current = true;
     return () => {
+      reconnectEnabledRef.current = false;
       if (dataReconnectTimerRef.current) {
         clearTimeout(dataReconnectTimerRef.current);
+      }
+      if (mediaReconnectTimerRef.current) {
+        clearTimeout(mediaReconnectTimerRef.current);
       }
     };
   }, []);
 
-  // Controls visibility state
-  const [showControls, setShowControls] = useState(true);
-  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const resetInactivityTimer = useCallback(() => {
-    setShowControls(true);
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
-    }
-    controlsTimeoutRef.current = setTimeout(() => {
-      setShowControls(false);
-    }, 3000);
-  }, []);
-
-  useEffect(() => {
-    const handleActivity = () => resetInactivityTimer();
-
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('click', handleActivity);
-    window.addEventListener('touchstart', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-
-    // Initial start
-    resetInactivityTimer();
-
-    return () => {
-      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('click', handleActivity);
-      window.removeEventListener('touchstart', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-    };
-  }, [resetInactivityTimer]);
+  const showControls = useAutoHideControls();
 
   useEffect(() => {
     setChatPanelOpen(isChatOpen);
   }, [isChatOpen, setChatPanelOpen]);
+
+  useEffect(() => {
+    if (isChatOpen) {
+      setIsMobileMoreOpen(false);
+    }
+  }, [isChatOpen]);
+
+  useEffect(() => {
+    if (!isMobileMoreOpen || typeof document === 'undefined') return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    mobileMorePanelRef.current?.focus();
+
+    return () => previousFocus?.focus();
+  }, [isMobileMoreOpen]);
 
   useEffect(() => {
     if (!myId || !conversationPeerId) return;
@@ -322,20 +361,17 @@ export default function CallPage() {
   }, [callSession.sessionId, myId, conversationPeerId, setConversationPeers]);
 
   useEffect(() => {
-    const parsed = parseCallSessionHash(location.hash);
-    if (parsed && parsed.sessionId !== callSession.sessionId) {
-      setCallSession(parsed);
-      return;
-    }
-
-    const nextSession: CallSessionState = {
-      ...callSession,
-      peerId: conversationPeerId ?? remotePeerId ?? callSession.peerId,
-    };
+    const nextSession = resolveCallSessionState(
+      location.hash,
+      callSession,
+      conversationPeerId ?? remotePeerId
+    );
     const nextHash = buildCallSessionHash(nextSession);
 
-    if (nextHash !== location.hash) {
+    if (!isSameCallSession(nextSession, callSession)) {
       setCallSession(nextSession);
+    }
+    if (nextHash !== location.hash) {
       navigate(`${location.pathname}${location.search}${nextHash}`, { replace: true });
     }
   }, [
@@ -383,7 +419,7 @@ export default function CallPage() {
 
     const session = await chatCryptoSessionPromiseRef.current;
     if (conn?.open && !chatCryptoPublicKeySentRef.current) {
-      conn.send({
+      sendDataConnectionPayload(conn, {
         type: 'CHAT_CRYPTO_KEY',
         version: 1,
         publicKey: session.publicKey,
@@ -407,92 +443,112 @@ export default function CallPage() {
     
     // 2. Send quality update to peer
     if (dataConnRef.current && dataConnRef.current.open) {
-      dataConnRef.current.send({ type: 'QUALITY_CHANGE', quality });
+      sendDataConnectionPayload(dataConnRef.current, { type: 'QUALITY_CHANGE', quality });
     }
   };
 
   // Handle outgoing heart
   useEffect(() => {
     if (outgoingHeart && dataConnRef.current && dataConnRef.current.open) {
-      dataConnRef.current.send({ type: 'HEART', heart: outgoingHeart });
+      sendDataConnectionPayload(dataConnRef.current, { type: 'HEART', heart: outgoingHeart });
     }
   }, [outgoingHeart]);
 
-  // Helper to check if data is a quality change message
-  const isQualityChangeMessage = (data: unknown): data is { type: 'QUALITY_CHANGE'; quality: VideoQuality } => {
-    return (
-      typeof data === 'object' &&
-      data !== null &&
-      'type' in data &&
-      (data as Record<string, unknown>).type === 'QUALITY_CHANGE' &&
-      'quality' in data
-    );
-  };
+  const sendFileControlPayload = useCallback(async (payload: unknown) => {
+    const conn = dataConnRef.current;
+    if (!conn?.open) throw new Error('聊天连接尚未建立');
+    const session = await ensureChatCryptoSession(conn);
+    if (!session.isReady()) throw new Error('加密通道尚未就绪');
+    await sendEncryptedDataPayload(conn, session, payload);
+  }, [ensureChatCryptoSession]);
 
-  // Helper to check if data is a heart message
-  const isHeartMessage = (data: unknown): data is { type: 'HEART'; heart: HeartData } => {
-    return (
-      typeof data === 'object' &&
-      data !== null &&
-      'type' in data &&
-      (data as Record<string, unknown>).type === 'HEART' &&
-      'heart' in data
-    );
-  };
-
-  const handleIncomingFileChunk = useCallback(async (payload: WireChatFileChunkPayload) => {
+  const handleIncomingFileChunk = useCallback(async (payload: BinaryFileChunkFrame) => {
     const transfer = incomingFileTransfersRef.current.get(payload.transferId);
     if (!transfer || payload.from !== transfer.offer.from) return;
 
     try {
-      const bytes = base64ToBytes(payload.chunk.data);
-      const expectedOffset = transfer.bytesReceived;
-      const nextOffset = expectedOffset + bytes.length;
       const fileSize = transfer.offer.message.file.size;
+      if (payload.offset < transfer.bytesReceived) return;
+      if (payload.offset !== transfer.bytesReceived) {
+        throw new Error(`文件传输数据不连续（期望 ${transfer.bytesReceived}，收到 ${payload.offset}）`);
+      }
 
-      if (payload.chunk.offset !== expectedOffset || nextOffset > fileSize) {
-        await transfer.writable?.abort?.();
-        incomingFileTransfersRef.current.delete(payload.transferId);
-        incomingFileOffersRef.current.delete(payload.transferId);
-        updateFileTransfer(payload.transferId, {
-          status: 'failed',
-          error: '文件传输数据不连续',
-        });
-        return;
+      const expectedLength = Math.min(CHAT_FILE_STREAM_CHUNK_BYTES, fileSize - payload.offset);
+      if (expectedLength <= 0 || payload.data.byteLength !== expectedLength) {
+        throw new Error(`文件分片大小异常（offset ${payload.offset}，大小 ${payload.data.byteLength}）`);
       }
 
       if (transfer.writable) {
-        await transfer.writable.write(bytes);
+        await transfer.writable.write(payload.data);
       } else {
-        transfer.chunks?.push(bytes);
+        transfer.chunks?.push(payload.data);
       }
 
-      transfer.bytesReceived = nextOffset;
-      updateFileTransfer(payload.transferId, {
-        status: 'transferring',
-        bytesTransferred: nextOffset,
-      });
+      transfer.bytesReceived += payload.data.byteLength;
+      const now = Date.now();
+      if (shouldPublishFileTransferProgress({
+        bytesTransferred: transfer.bytesReceived,
+        totalBytes: fileSize,
+        snapshot: {
+          lastUpdateAt: transfer.lastProgressUpdateAt,
+          lastUpdateBytes: transfer.lastProgressUpdateBytes,
+        },
+        now,
+      })) {
+        transfer.lastProgressUpdateAt = now;
+        transfer.lastProgressUpdateBytes = transfer.bytesReceived;
+        updateFileTransfer(payload.transferId, {
+          status: 'transferring',
+          bytesTransferred: transfer.bytesReceived,
+        });
+      }
 
-      if (nextOffset !== fileSize) return;
+      if (transfer.bytesReceived !== fileSize) {
+        try {
+          await sendFileControlPayload(createWireChatFileCredit(
+            payload.transferId,
+            myId,
+            transfer.bytesReceived,
+            FILE_TRANSFER_CREDIT_WINDOW_BYTES
+          ));
+        } catch {
+          // The persisted offset is advertised after the control channel reconnects.
+        }
+        return;
+      }
 
       if (transfer.writable) {
         await transfer.writable.close();
         updateFileTransfer(payload.transferId, {
           status: 'saved',
-          bytesTransferred: nextOffset,
+          bytesTransferred: transfer.bytesReceived,
         });
       } else {
         const blob = new Blob(transfer.chunks ?? [], { type: transfer.offer.message.file.mimeType });
         const objectUrl = URL.createObjectURL(blob);
         updateFileTransfer(payload.transferId, {
           status: 'ready',
-          bytesTransferred: nextOffset,
+          bytesTransferred: transfer.bytesReceived,
           file: { objectUrl },
         });
       }
 
+      pendingFileCompletionsRef.current.set(payload.transferId, {
+        from: myId,
+        bytesReceived: transfer.bytesReceived,
+      });
       incomingFileTransfersRef.current.delete(payload.transferId);
       incomingFileOffersRef.current.delete(payload.transferId);
+      try {
+        await sendFileControlPayload(createWireChatFileComplete(
+          payload.transferId,
+          myId,
+          transfer.bytesReceived
+        ));
+        pendingFileCompletionsRef.current.delete(payload.transferId);
+      } catch {
+        // Completion is retried after the control channel reconnects.
+      }
     } catch (err) {
       await transfer.writable?.abort?.().catch(() => undefined);
       incomingFileTransfersRef.current.delete(payload.transferId);
@@ -501,79 +557,110 @@ export default function CallPage() {
         status: 'failed',
         error: err instanceof Error ? err.message : '文件接收失败',
       });
+      try {
+        await sendFileControlPayload(createWireChatFileError(
+          payload.transferId,
+          myId,
+          err instanceof Error ? err.message.slice(0, 240) : '文件接收失败'
+        ));
+      } catch {
+        // The local failure remains visible even if the control channel is gone.
+      }
     }
-  }, [updateFileTransfer]);
+  }, [myId, sendFileControlPayload, updateFileTransfer]);
 
   const startOutgoingFileTransfer = useCallback(async (transferId: string) => {
     const transfer = outgoingFileTransfersRef.current.get(transferId);
-    const conn = dataConnRef.current;
+    const conn = bulkDataConnRef.current;
     if (!transfer) return;
+    if (!claimOutgoingFileTransferStart(transfer)) return;
+
     if (!conn?.open || !myId) {
-      updateFileTransfer(transferId, {
-        status: 'failed',
-        error: '聊天连接尚未建立',
-      });
-      outgoingFileTransfersRef.current.delete(transferId);
+      transfer.isStarted = false;
       return;
     }
 
-    const session = await ensureChatCryptoSession(conn);
-    if (!session.isReady()) {
-      updateFileTransfer(transferId, {
-        status: 'failed',
-        error: '加密通道尚未就绪',
-      });
-      outgoingFileTransfersRef.current.delete(transferId);
+    const session = chatCryptoSessionRef.current;
+    if (!session?.isReady()) {
+      transfer.isStarted = false;
       return;
     }
 
+    const startedAt = Date.now();
+    transfer.lastProgressUpdateAt = startedAt;
+    transfer.lastProgressUpdateBytes = 0;
     updateFileTransfer(transferId, {
       status: 'transferring',
       bytesTransferred: 0,
     });
 
     try {
-      let offset = 0;
-      let index = 0;
-      while (offset < transfer.file.size) {
-        const { bytes, data } = await readFileSliceAsBase64(transfer.file, offset);
-        await sendEncryptedDataPayload(
+      while (transfer.window.nextOffset < transfer.file.size) {
+        const offset = transfer.window.nextOffset;
+        const bytes = await readFileSlice(transfer.file, offset);
+        if (!canSendFileChunk(transfer.window, bytes.byteLength, transfer.file.size)) break;
+
+        await sendEncryptedBinaryPayload(
           conn,
           session,
-          createWireChatFileStreamChunk({
+          encodeFileChunkFrame({
             transferId,
             from: myId,
-            index,
+            index: offset / CHAT_FILE_STREAM_CHUNK_BYTES,
             offset,
-            data,
+            data: bytes,
           })
         );
 
-        offset += bytes.length;
-        index += 1;
-        updateFileTransfer(transferId, {
-          status: 'transferring',
-          bytesTransferred: offset,
-        });
+        transfer.window = advanceFileTransferWindow(
+          transfer.window,
+          bytes.byteLength,
+          transfer.file.size
+        );
+        const bytesSent = transfer.window.nextOffset;
+        const now = Date.now();
+        if (shouldPublishFileTransferProgress({
+          bytesTransferred: bytesSent,
+          totalBytes: transfer.file.size,
+          snapshot: {
+            lastUpdateAt: transfer.lastProgressUpdateAt,
+            lastUpdateBytes: transfer.lastProgressUpdateBytes,
+          },
+          now,
+        })) {
+          transfer.lastProgressUpdateAt = now;
+          transfer.lastProgressUpdateBytes = offset;
+          updateFileTransfer(transferId, {
+            status: 'transferring',
+            bytesTransferred: bytesSent,
+          });
+        }
       }
 
+      transfer.isStarted = false;
       updateFileTransfer(transferId, {
-        status: 'sent',
-        bytesTransferred: transfer.file.size,
+        status: 'transferring',
+        bytesTransferred: transfer.window.nextOffset,
       });
-      outgoingFileTransfersRef.current.delete(transferId);
     } catch (err) {
+      transfer.isStarted = false;
+      if (!conn.open || conn.dataChannel?.readyState !== 'open') return;
       updateFileTransfer(transferId, {
         status: 'failed',
         error: err instanceof Error ? err.message : '文件发送失败',
       });
       outgoingFileTransfersRef.current.delete(transferId);
     }
-  }, [ensureChatCryptoSession, myId, updateFileTransfer]);
+  }, [myId, updateFileTransfer]);
 
-  const handleDataMessage = useCallback(async (data: unknown) => {
+  const handleDataMessage = useCallback(async (data: unknown, conn: DataConnection) => {
     if (isSessionResumePayload(data)) {
-      if (data.sessionId === callSessionRef.current.sessionId) {
+      if (isSessionResumePeerValid({
+        localRole: callSessionRef.current.role,
+        activeSessionId: callSessionRef.current.sessionId,
+        connectionPeer: conn.peer,
+        payload: data,
+      })) {
         setConversationPeerId(data.peerId);
         if (myId) {
           setConversationPeers(myId, data.peerId, callSessionRef.current.sessionId);
@@ -584,9 +671,26 @@ export default function CallPage() {
 
     if (isChatCryptoKeyMessage(data)) {
       try {
-        const session = await ensureChatCryptoSession(dataConnRef.current);
+        const session = await ensureChatCryptoSession(conn);
         await session.acceptPeerPublicKey(data.publicKey);
         setIsChatSecure(true);
+        for (const [transferId, transfer] of incomingFileTransfersRef.current) {
+          await sendEncryptedDataPayload(conn, session, createWireChatFileCredit(
+            transferId,
+            myId,
+            transfer.bytesReceived,
+            FILE_TRANSFER_CREDIT_WINDOW_BYTES,
+            true
+          ));
+        }
+        for (const [transferId, completion] of pendingFileCompletionsRef.current) {
+          await sendEncryptedDataPayload(conn, session, createWireChatFileComplete(
+            transferId,
+            completion.from,
+            completion.bytesReceived
+          ));
+          pendingFileCompletionsRef.current.delete(transferId);
+        }
       } catch (err) {
         console.error('Chat crypto handshake failed:', err);
         setIsChatSecure(false);
@@ -596,9 +700,10 @@ export default function CallPage() {
 
     if (isEncryptedChatEnvelope(data)) {
       try {
-        const session = await ensureChatCryptoSession(dataConnRef.current);
+        const session = await ensureChatCryptoSession(conn);
         const payload = await session.decrypt(data);
         if (isWireChatPayload(payload)) {
+          if (!isPayloadPeerValid(payload.message, conn.peer)) return;
           if (myId) {
             setConversationPeers(myId, payload.message.from, callSessionRef.current.sessionId);
           }
@@ -607,6 +712,7 @@ export default function CallPage() {
         }
 
         if (isWireChatFileOfferPayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
           if (myId) {
             setConversationPeers(myId, payload.from, callSessionRef.current.sessionId);
           }
@@ -616,11 +722,61 @@ export default function CallPage() {
         }
 
         if (isWireChatFileAcceptPayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
+          const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
+          if (!transfer) return;
+          transfer.window = resumeFileTransferWindow(transfer.window, {
+            persistedOffset: payload.acknowledgedOffset,
+            creditBytes: payload.creditBytes,
+            fileSize: transfer.file.size,
+          });
           void startOutgoingFileTransfer(payload.transferId);
           return;
         }
 
+        if (isWireChatFileCreditPayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
+          const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
+          if (!transfer) return;
+          transfer.window = payload.resume
+            ? resumeFileTransferWindow(transfer.window, {
+                persistedOffset: payload.acknowledgedOffset,
+                creditBytes: payload.creditBytes,
+                fileSize: transfer.file.size,
+              })
+            : applyFileTransferCredit(transfer.window, {
+                acknowledgedOffset: payload.acknowledgedOffset,
+                creditBytes: payload.creditBytes,
+                fileSize: transfer.file.size,
+              });
+          void startOutgoingFileTransfer(payload.transferId);
+          return;
+        }
+
+        if (isWireChatFileCompletePayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
+          const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
+          if (!transfer || payload.bytesReceived !== transfer.file.size) return;
+          updateFileTransfer(payload.transferId, {
+            status: 'sent',
+            bytesTransferred: payload.bytesReceived,
+          });
+          outgoingFileTransfersRef.current.delete(payload.transferId);
+          return;
+        }
+
+        if (isWireChatFileErrorPayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
+          outgoingFileTransfersRef.current.delete(payload.transferId);
+          updateFileTransfer(payload.transferId, {
+            status: 'failed',
+            error: payload.message,
+          });
+          return;
+        }
+
         if (isWireChatFileDeclinePayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
           outgoingFileTransfersRef.current.delete(payload.transferId);
           updateFileTransfer(payload.transferId, {
             status: 'rejected',
@@ -629,22 +785,19 @@ export default function CallPage() {
           return;
         }
 
-        if (isWireChatFileChunkPayload(payload)) {
-          await handleIncomingFileChunk(payload);
-        }
       } catch (err) {
         console.error('Encrypted chat message failed:', err);
       }
       return;
     }
 
-    if (isQualityChangeMessage(data)) {
+    if (isQualityChangePayload(data)) {
       const quality = data.quality;
       console.log('Received quality change request:', quality);
       if (quality.label !== currentQualityRef.current.label) {
         changeQuality(quality);
       }
-    } else if (isHeartMessage(data)) {
+    } else if (isHeartPayload(data)) {
       receiveHeart(data.heart);
     }
   }, [
@@ -652,7 +805,6 @@ export default function CallPage() {
     addIncomingWireMessage,
     changeQuality,
     ensureChatCryptoSession,
-    handleIncomingFileChunk,
     myId,
     receiveHeart,
     setConversationPeers,
@@ -660,12 +812,23 @@ export default function CallPage() {
     updateFileTransfer,
   ]);
 
+  const handleBulkDataMessage = useCallback(async (data: unknown, conn: DataConnection) => {
+    if (!isEncryptedBinaryChatEnvelope(data)) return;
+    const session = chatCryptoSessionRef.current;
+    if (!session?.isReady()) return;
+
+    const plaintext = await session.decryptBytes(data);
+    const payload = decodeFileChunkFrame(plaintext);
+    if (!isPayloadPeerValid(payload, conn.peer)) return;
+    await handleIncomingFileChunk(payload);
+  }, [handleIncomingFileChunk]);
+
   const queueDataMessage = useCallback((data: unknown, generation: number, conn: DataConnection) => {
     const next = dataMessageQueueRef.current
       .catch(() => undefined)
       .then(async () => {
         if (connectionGenerationRef.current !== generation || !isCurrentConnection(dataConnRef.current, conn)) return;
-        await handleDataMessage(data);
+        await handleDataMessage(data, conn);
       })
       .catch((err) => {
         console.error('Data message failed:', err);
@@ -673,46 +836,97 @@ export default function CallPage() {
     dataMessageQueueRef.current = next;
   }, [handleDataMessage]);
 
-  const resetDataConnection = useCallback(() => {
+  const queueBulkDataMessage = useCallback((data: unknown, generation: number, conn: DataConnection) => {
+    const next = bulkMessageQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (connectionGenerationRef.current !== generation || !isCurrentConnection(bulkDataConnRef.current, conn)) return;
+        await handleBulkDataMessage(data, conn);
+      })
+      .catch((err) => {
+        console.error('Bulk data message failed:', err);
+      });
+    bulkMessageQueueRef.current = next;
+  }, [handleBulkDataMessage]);
+
+  const closeCurrentBulkDataConnection = useCallback(() => {
+    const conn = bulkDataConnRef.current;
+    bulkDataConnRef.current = null;
+    conn?.close();
+  }, []);
+
+  const resetDataConnection = useCallback((abortTransfers = false) => {
     resetChatCryptoState();
     dataMessageQueueRef.current = Promise.resolve();
-    for (const transferId of outgoingFileTransfersRef.current.keys()) {
-      updateFileTransfer(transferId, {
-        status: 'failed',
-        error: '聊天连接已断开',
-      });
+    bulkMessageQueueRef.current = Promise.resolve();
+    for (const transfer of outgoingFileTransfersRef.current.values()) {
+      transfer.isStarted = false;
     }
 
-    for (const [transferId, transfer] of incomingFileTransfersRef.current) {
-      void transfer.writable?.abort?.();
-      updateFileTransfer(transferId, {
-        status: 'failed',
-        error: '聊天连接已断开',
-      });
-    }
+    if (abortTransfers) {
+      for (const transferId of outgoingFileTransfersRef.current.keys()) {
+        updateFileTransfer(transferId, {
+          status: 'failed',
+          error: '聊天连接已断开',
+        });
+      }
 
-    for (const transferId of incomingFileOffersRef.current.keys()) {
-      updateFileTransfer(transferId, {
-        status: 'failed',
-        error: '聊天连接已断开',
-      });
-    }
+      for (const [transferId, transfer] of incomingFileTransfersRef.current) {
+        void transfer.writable?.abort?.();
+        updateFileTransfer(transferId, {
+          status: 'failed',
+          error: '聊天连接已断开',
+        });
+      }
 
-    outgoingFileTransfersRef.current.clear();
-    incomingFileOffersRef.current.clear();
-    incomingFileTransfersRef.current.clear();
+      for (const transferId of incomingFileOffersRef.current.keys()) {
+        updateFileTransfer(transferId, {
+          status: 'failed',
+          error: '聊天连接已断开',
+        });
+      }
+
+      outgoingFileTransfersRef.current.clear();
+      incomingFileOffersRef.current.clear();
+      acceptingFileTransfersRef.current.clear();
+      incomingFileTransfersRef.current.clear();
+      pendingFileCompletionsRef.current.clear();
+    }
     setIsDataConnected(false);
     setIsChatSecure(false);
   }, [resetChatCryptoState, updateFileTransfer]);
+
+  useEffect(() => {
+    const outgoingTransfers = outgoingFileTransfersRef.current;
+    const incomingOffers = incomingFileOffersRef.current;
+    const acceptingTransfers = acceptingFileTransfersRef.current;
+    const incomingTransfers = incomingFileTransfersRef.current;
+    const pendingCompletions = pendingFileCompletionsRef.current;
+
+    return () => {
+      for (const transfer of incomingTransfers.values()) {
+        void transfer.writable?.abort?.();
+      }
+      outgoingTransfers.clear();
+      incomingOffers.clear();
+      acceptingTransfers.clear();
+      incomingTransfers.clear();
+      pendingCompletions.clear();
+    };
+  }, []);
 
   const closeCurrentDataConnection = useCallback(() => {
     const conn = dataConnRef.current;
     dataConnRef.current = null;
     conn?.close();
-  }, []);
+    closeCurrentBulkDataConnection();
+  }, [closeCurrentBulkDataConnection]);
 
   const scheduleDataReconnect = useCallback(() => {
-    if (!remotePeerId) return;
+    if (!reconnectEnabledRef.current || !shouldInitiateOutgoingConnection({
+      role: callSessionRef.current.role,
+      remotePeerId,
+    })) return;
 
     setDataReconnectCount((count) => {
       const delayMs = dataReconnectDelayMs(count);
@@ -724,6 +938,28 @@ export default function CallPage() {
       dataReconnectTimerRef.current = setTimeout(() => {
         dataReconnectTimerRef.current = null;
         setDataReconnectAttempt((attempt) => attempt + 1);
+      }, delayMs);
+
+      return count + 1;
+    });
+  }, [remotePeerId]);
+
+  const scheduleMediaReconnect = useCallback(() => {
+    if (!reconnectEnabledRef.current || !shouldInitiateOutgoingConnection({
+      role: callSessionRef.current.role,
+      remotePeerId,
+    })) return;
+
+    setMediaReconnectCount((count) => {
+      const delayMs = dataReconnectDelayMs(count);
+      if (delayMs === null) return count;
+
+      if (mediaReconnectTimerRef.current) {
+        clearTimeout(mediaReconnectTimerRef.current);
+      }
+      mediaReconnectTimerRef.current = setTimeout(() => {
+        mediaReconnectTimerRef.current = null;
+        setReconnectAttempt((attempt) => attempt + 1);
       }, delayMs);
 
       return count + 1;
@@ -782,7 +1018,7 @@ export default function CallPage() {
         dataReconnectTimerRef.current = null;
       }
       if (myId) {
-        conn.send(createSessionResumeMessage({
+        sendDataConnectionPayload(conn, createSessionResumeMessage({
           sessionId: callSessionRef.current.sessionId,
           peerId: myId,
           role: callSessionRef.current.role,
@@ -798,6 +1034,7 @@ export default function CallPage() {
       if (connectionGenerationRef.current !== generation) return;
       if (isCurrentConnection(dataConnRef.current, conn)) {
         dataConnRef.current = null;
+        closeCurrentBulkDataConnection();
         resetDataConnection();
         scheduleDataReconnect();
       }
@@ -819,12 +1056,69 @@ export default function CallPage() {
     }
   }, [
     ensureChatCryptoSession,
+    closeCurrentBulkDataConnection,
     myId,
     queueDataMessage,
     resetChatCryptoState,
     resetDataConnection,
     scheduleDataReconnect,
     setConversationPeers,
+  ]);
+
+  const setupBulkDataConnection = useCallback((
+    conn: DataConnection,
+    generation = connectionGenerationRef.current
+  ) => {
+    bulkDataConnRef.current = conn;
+
+    const handleOpen = () => {
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(bulkDataConnRef.current, conn)) return;
+      setDataReconnectCount(0);
+      for (const [transferId, transfer] of outgoingFileTransfersRef.current) {
+        if (transfer.window.nextOffset === transfer.window.acknowledgedOffset) {
+          void startOutgoingFileTransfer(transferId);
+        }
+      }
+      for (const [transferId, transfer] of incomingFileTransfersRef.current) {
+        void sendFileControlPayload(createWireChatFileCredit(
+          transferId,
+          myId,
+          transfer.bytesReceived,
+          FILE_TRANSFER_CREDIT_WINDOW_BYTES,
+          true
+        )).catch(() => undefined);
+      }
+    };
+
+    const handleClose = () => {
+      if (connectionGenerationRef.current !== generation) return;
+      if (isCurrentConnection(bulkDataConnRef.current, conn)) {
+        bulkDataConnRef.current = null;
+        for (const transfer of outgoingFileTransfersRef.current.values()) {
+          transfer.isStarted = false;
+        }
+        scheduleDataReconnect();
+      }
+    };
+
+    conn.on('open', handleOpen);
+    conn.on('data', (data: unknown) => {
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(bulkDataConnRef.current, conn)) return;
+      queueBulkDataMessage(data, generation, conn);
+    });
+    conn.on('close', handleClose);
+    conn.on('error', (err) => {
+      console.error('Bulk data connection error:', err);
+      handleClose();
+    });
+
+    if (conn.open) handleOpen();
+  }, [
+    myId,
+    queueBulkDataMessage,
+    scheduleDataReconnect,
+    sendFileControlPayload,
+    startOutgoingFileTransfer,
   ]);
 
   // Initialize local stream
@@ -1030,7 +1324,10 @@ export default function CallPage() {
   // Handle connection logic
   // 1. Caller logic (Initiate call)
   useEffect(() => {
-    if (!isPeerReady || !stream || !remotePeerId) return;
+    if (!isPeerReady || !stream || !shouldInitiateOutgoingConnection({
+      role: callSession.role,
+      remotePeerId,
+    })) return;
     
     // We are the caller
     // Only initiate call if not already called
@@ -1046,6 +1343,11 @@ export default function CallPage() {
           if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
+          setMediaReconnectCount(0);
+          if (mediaReconnectTimerRef.current) {
+            clearTimeout(mediaReconnectTimerRef.current);
+            mediaReconnectTimerRef.current = null;
+          }
         });
 
         call.on('close', () => {
@@ -1059,6 +1361,7 @@ export default function CallPage() {
           setRtcConnectionState('');
           resetConnectionStats();
           attachPeerConnectionDebug(null);
+          scheduleMediaReconnect();
         });
 
         call.on('error', (err) => {
@@ -1073,6 +1376,7 @@ export default function CallPage() {
             setRtcConnectionState('');
             resetConnectionStats();
             attachPeerConnectionDebug(null);
+            scheduleMediaReconnect();
         });
       }
     }
@@ -1084,9 +1388,16 @@ export default function CallPage() {
         setupDataConnection(conn, connectionGenerationRef.current);
       }
     }
+    if (!bulkDataConnRef.current) {
+      const conn = connectToPeer(remotePeerId, createConnectionMetadata(), 'bulk');
+      if (conn) {
+        setupBulkDataConnection(conn, connectionGenerationRef.current);
+      }
+    }
   }, [
     isPeerReady,
     stream,
+    callSession.role,
     remotePeerId,
     callPeer,
     connectToPeer,
@@ -1095,7 +1406,9 @@ export default function CallPage() {
     closeCurrentDataConnection,
     resetConnectionStats,
     resetDataConnection,
+    scheduleMediaReconnect,
     setupDataConnection,
+    setupBulkDataConnection,
     reconnectAttempt,
     dataReconnectAttempt,
   ]);
@@ -1105,14 +1418,18 @@ export default function CallPage() {
   useEffect(() => {
     if (!isPeerReady) return;
 
-    if (!remotePeerId) {
+    if (callSession.role === 'host') {
       setConnectionStatus('waiting');
     }
 
     onIncomingCall((call) => {
       console.log('Incoming call received');
-      const isSameSession = connectionMatchesSession(call, callSessionRef.current.sessionId);
-      if (!shouldAcceptIncomingSessionConnection({ isSameSession })) {
+      if (!isIncomingConnectionMetadataValid({
+        localRole: callSessionRef.current.role,
+        activeSessionId: callSessionRef.current.sessionId,
+        connectionPeer: call.peer,
+        metadata: call.metadata,
+      })) {
         call.close();
         return;
       }
@@ -1121,6 +1438,14 @@ export default function CallPage() {
         enableTurnFallback();
       }
       if (callRef.current) {
+        const currentTransportState = callRef.current.peerConnection?.connectionState ?? '';
+        if (!shouldReplaceCurrentMediaConnection({
+          hasCurrentConnection: true,
+          currentTransportState,
+        })) {
+          call.close();
+          return;
+        }
         closeActiveConnections();
       }
       setConversationPeerId(call.peer);
@@ -1130,8 +1455,17 @@ export default function CallPage() {
 
     onIncomingData((conn) => {
       console.log('Incoming data connection received');
-      const isSameSession = connectionMatchesSession(conn, callSessionRef.current.sessionId);
-      if (!shouldAcceptIncomingSessionConnection({ isSameSession })) {
+      if (!isIncomingConnectionMetadataValid({
+        localRole: callSessionRef.current.role,
+        activeSessionId: callSessionRef.current.sessionId,
+        connectionPeer: conn.peer,
+        metadata: conn.metadata,
+      })) {
+        conn.close();
+        return;
+      }
+      const channel = getDataConnectionChannel(conn.metadata);
+      if (!channel) {
         conn.close();
         return;
       }
@@ -1139,7 +1473,28 @@ export default function CallPage() {
       if (metadata?.turnMode && metadata.turnMode !== 'off') {
         enableTurnFallback();
       }
+      if (channel === 'bulk') {
+        if (bulkDataConnRef.current && bulkDataConnRef.current !== conn) {
+          if (bulkDataConnRef.current.open) {
+            conn.close();
+            return;
+          }
+          const previousConn = bulkDataConnRef.current;
+          bulkDataConnRef.current = null;
+          previousConn.close();
+        }
+        setupBulkDataConnection(conn, connectionGenerationRef.current);
+        return;
+      }
       if (dataConnRef.current && dataConnRef.current !== conn) {
+        if (!shouldReplaceCurrentDataConnection({
+          hasCurrentConnection: true,
+          isCurrentOpen: dataConnRef.current.open,
+        })) {
+          conn.close();
+          return;
+        }
+
         const previousConn = dataConnRef.current;
         dataConnRef.current = null;
         resetDataConnection();
@@ -1149,6 +1504,7 @@ export default function CallPage() {
     });
   }, [
     closeActiveConnections,
+    callSession.role,
     enableTurnFallback,
     isPeerReady,
     onIncomingCall,
@@ -1156,6 +1512,7 @@ export default function CallPage() {
     remotePeerId,
     resetDataConnection,
     setupDataConnection,
+    setupBulkDataConnection,
   ]);
 
   // 3. Callee logic - Handle incoming call events
@@ -1184,6 +1541,9 @@ export default function CallPage() {
       setRtcConnectionState('');
       resetConnectionStats();
       attachPeerConnectionDebug(null);
+      if (callSessionRef.current.role === 'host') {
+        setConnectionStatus('waiting');
+      }
     });
 
     incomingCall.on('error', (err) => {
@@ -1199,6 +1559,9 @@ export default function CallPage() {
       setRtcConnectionState('');
       resetConnectionStats();
       attachPeerConnectionDebug(null);
+      if (callSessionRef.current.role === 'host') {
+        setConnectionStatus('waiting');
+      }
     });
 
     return () => {
@@ -1269,6 +1632,10 @@ export default function CallPage() {
         outgoingFileTransfersRef.current.set(message.id, {
           file,
           messageId: message.id,
+          isStarted: false,
+          window: createFileTransferSendWindow(file.size),
+          lastProgressUpdateAt: 0,
+          lastProgressUpdateBytes: 0,
         });
         await sendEncryptedDataPayload(conn, session, createWireChatFileOffer(message, myId));
       } else {
@@ -1306,7 +1673,8 @@ export default function CallPage() {
       throw new Error('聊天连接尚未建立');
     }
 
-    if (incomingFileTransfersRef.current.has(messageId)) return;
+    if (incomingFileTransfersRef.current.has(messageId) || acceptingFileTransfersRef.current.has(messageId)) return;
+    acceptingFileTransfersRef.current.add(messageId);
 
     let writable: FileSystemWritableFileStreamLike | undefined;
     let saveMode: WireChatFileSaveMode = 'memory';
@@ -1329,6 +1697,8 @@ export default function CallPage() {
       incomingFileTransfersRef.current.set(messageId, {
         offer,
         bytesReceived: 0,
+        lastProgressUpdateAt: Date.now(),
+        lastProgressUpdateBytes: 0,
         saveMode,
         writable,
         chunks: writable ? undefined : [],
@@ -1339,7 +1709,12 @@ export default function CallPage() {
         saveMode,
         error: undefined,
       });
-      await sendEncryptedDataPayload(conn, session, createWireChatFileAccept(messageId, myId, saveMode));
+      await sendEncryptedDataPayload(conn, session, createWireChatFileAccept(
+        messageId,
+        myId,
+        saveMode,
+        FILE_TRANSFER_CREDIT_WINDOW_BYTES
+      ));
     } catch (err) {
       const errorName = typeof err === 'object' && err !== null && 'name' in err
         ? (err as { name?: unknown }).name
@@ -1353,6 +1728,8 @@ export default function CallPage() {
         error: err instanceof Error ? err.message : '无法接收文件',
       });
       throw err instanceof Error ? err : new Error('无法接收文件');
+    } finally {
+      acceptingFileTransfersRef.current.delete(messageId);
     }
   }, [ensureChatCryptoSession, myId, updateFileTransfer]);
 
@@ -1381,6 +1758,7 @@ export default function CallPage() {
 
     await sendEncryptedDataPayload(conn, session, createWireChatFileDecline(messageId, myId));
     incomingFileOffersRef.current.delete(messageId);
+    acceptingFileTransfersRef.current.delete(messageId);
     incomingFileTransfersRef.current.delete(messageId);
     updateFileTransfer(messageId, {
       status: 'rejected',
@@ -1403,11 +1781,14 @@ export default function CallPage() {
   })();
 
   const endCall = () => {
+    reconnectEnabledRef.current = false;
+    if (mediaReconnectTimerRef.current) clearTimeout(mediaReconnectTimerRef.current);
+    if (dataReconnectTimerRef.current) clearTimeout(dataReconnectTimerRef.current);
     if (callRef.current) {
       callRef.current.close();
     }
     closeCurrentDataConnection();
-    resetDataConnection();
+    resetDataConnection(true);
     navigate('/');
   };
 
@@ -1433,6 +1814,7 @@ export default function CallPage() {
     }
     return '已启用 TURN 候选但连接仍失败，请检查 TURN 地址、凭据、防火墙和 relay 端口，或使用 turn=force 排障。';
   })();
+  const controlsVisible = showControls || isChatOpen || isMobileMoreOpen;
 
   if (streamError || peerError) {
     return (
@@ -1541,74 +1923,117 @@ export default function CallPage() {
         onDeclineFileTransfer={handleDeclineFileTransfer}
       />
 
-      {/* Controls Bar */}
-      <div className={cn(
-        "absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-6 px-8 py-4 bg-gray-800/90 backdrop-blur-sm rounded-full shadow-2xl border border-gray-700 z-50 transition-all duration-300 ease-in-out",
-        showControls || isChatOpen ? "translate-y-0 opacity-100" : "translate-y-24 opacity-0 pointer-events-none"
-      )}>
-        <Button
-          variant={isAudioEnabled ? 'secondary' : 'danger'}
-          size="icon"
-          className="rounded-full h-14 w-14"
-          onClick={toggleAudio}
+      {isMobileMoreOpen && (
+        <div
+          ref={mobileMorePanelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="更多通话选项"
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setIsMobileMoreOpen(false);
+          }}
+          className={cn(
+            "absolute inset-x-4 bottom-[calc(7rem+env(safe-area-inset-bottom))] z-[60] rounded-2xl border border-gray-700 bg-gray-900/95 p-3 text-white shadow-2xl backdrop-blur-md transition-all duration-300 ease-in-out md:hidden",
+            controlsVisible ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0 pointer-events-none"
+          )}
         >
-          {isAudioEnabled ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
-        </Button>
-
-        <Button
-          variant={isRemoteMuted ? 'secondary' : 'secondary'}
-          size="icon"
-          className="rounded-full h-14 w-14"
-          onClick={() => setIsRemoteMuted((v) => !v)}
-          title={isRemoteMuted ? '开启对方声音' : '静音对方声音'}
-        >
-          {isRemoteMuted ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />}
-        </Button>
-
-        <Button
-            variant={isVideoEnabled ? "secondary" : "danger"}
-            size="icon"
-            className="rounded-full h-12 w-12 bg-gray-700 hover:bg-gray-600"
-            onClick={toggleVideo}
-            title={isVideoEnabled ? "Turn off camera" : "Turn on camera"}
-          >
-            {isVideoEnabled ? <Video className="h-5 w-5 text-white" /> : <VideoOff className="h-5 w-5 text-white" />}
-          </Button>
-
-          <SettingsMenu
-            currentQuality={currentQuality}
-            onQualityChange={handleQualityChange}
-            videoFitMode={videoFitMode}
-            onVideoFitModeChange={setVideoFitMode}
-            disabled={!stream}
-          />
-
-          <Button
-            variant={isChatOpen ? 'primary' : 'secondary'}
-            size="icon"
-            className="relative h-12 w-12 rounded-full bg-gray-700 hover:bg-gray-600"
-            onClick={() => setIsChatOpen((value) => !value)}
-            title="聊天"
-          >
-            <MessageCircle className="h-5 w-5 text-white" />
-            {unreadChatCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
-                {unreadChatCount > 9 ? '9+' : unreadChatCount}
+          <div className="space-y-3">
+            <button
+              type="button"
+              className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-gray-700 bg-gray-800 px-3 text-left text-sm text-gray-100 hover:bg-gray-700"
+              onClick={() => setIsRemoteMuted((value) => !value)}
+              aria-pressed={!isRemoteMuted}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gray-700">
+                {isRemoteMuted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
               </span>
-            )}
-          </Button>
+              <span className="min-w-0">
+                <span className="block font-medium">对方声音</span>
+                <span className="block text-xs text-gray-400">{isRemoteMuted ? '已静音' : '已开启'}</span>
+              </span>
+            </button>
 
-          <Button
-            variant="danger"
-            size="icon"
-            className="rounded-full h-12 w-12 hover:bg-red-700"
-            onClick={endCall}
-            title="End call"
-          >
-            <PhoneOff className="h-5 w-5 text-white" />
-          </Button>
-      </div>
-      
+            <div className="rounded-xl border border-gray-700 bg-gray-800 p-3 text-sm text-gray-100">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="font-medium">显示模式</span>
+                <div className="grid grid-cols-2 rounded-lg border border-gray-700 bg-gray-900 p-0.5">
+                  <button
+                    type="button"
+                    className={cn(
+                      "min-h-9 rounded-md px-3 text-xs font-medium",
+                      videoFitMode === 'cover' ? "bg-blue-600 text-white" : "text-gray-300"
+                    )}
+                    onClick={() => setVideoFitMode('cover')}
+                  >
+                    填满
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "min-h-9 rounded-md px-3 text-xs font-medium",
+                      videoFitMode === 'contain' ? "bg-blue-600 text-white" : "text-gray-300"
+                    )}
+                    onClick={() => setVideoFitMode('contain')}
+                  >
+                    适应
+                  </button>
+                </div>
+              </div>
+
+              <label className="block">
+                <span className="mb-1 block font-medium">视频画质</span>
+                <select
+                  className="h-10 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 text-sm text-white outline-none focus:border-blue-500"
+                  value={currentQuality.label}
+                  disabled={!stream}
+                  onChange={(event) => {
+                    const nextQuality = VIDEO_QUALITIES.find((quality) => quality.label === event.target.value);
+                    if (nextQuality) {
+                      void handleQualityChange(nextQuality);
+                    }
+                  }}
+                >
+                  {VIDEO_QUALITIES.map((quality) => (
+                    <option key={quality.label} value={quality.label}>
+                      {quality.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <CallControls
+        visible={controlsVisible}
+        isAudioEnabled={isAudioEnabled}
+        isVideoEnabled={isVideoEnabled}
+        isRemoteMuted={isRemoteMuted}
+        isChatOpen={isChatOpen}
+        isMobileMoreOpen={isMobileMoreOpen}
+        unreadCount={unreadChatCount}
+        streamAvailable={Boolean(stream)}
+        currentQuality={currentQuality}
+        videoFitMode={videoFitMode}
+        onToggleAudio={toggleAudio}
+        onToggleVideo={toggleVideo}
+        onToggleRemoteAudio={() => setIsRemoteMuted((value) => !value)}
+        onQualityChange={(quality) => void handleQualityChange(quality)}
+        onVideoFitModeChange={setVideoFitMode}
+        onToggleChat={() => setIsChatOpen((value) => !value)}
+        onOpenChat={() => {
+          setIsMobileMoreOpen(false);
+          setIsChatOpen(true);
+        }}
+        onToggleMobileMore={() => {
+          setIsChatOpen(false);
+          setIsMobileMoreOpen((value) => !value);
+        }}
+        onEndCall={endCall}
+      />
+
       <NetworkDiagnosticsPanel
         effectiveConnectionStatus={effectiveConnectionStatus}
         rtcIceState={rtcIceState}

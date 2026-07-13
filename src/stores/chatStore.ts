@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   makeConversationId,
+  MAX_CHAT_MESSAGES,
   purgePersistedChatStorage,
   type ChatFileAttachment,
   type ChatFileTransfer,
@@ -64,12 +65,12 @@ const getKind = (text?: string, image?: ChatImageAttachment, file?: ChatFileAtta
 
 const upsertMessage = (messages: ChatMessage[], message: ChatMessage) => {
   const existingIndex = messages.findIndex((item) => item.id === message.id);
-  if (existingIndex === -1) return [...messages, message];
+  if (existingIndex === -1) return limitMessagesInMemory([...messages, message]);
 
   const nextMessages = [...messages];
   revokeReplacedObjectUrl(nextMessages[existingIndex], message);
   nextMessages[existingIndex] = message;
-  return nextMessages;
+  return limitMessagesInMemory(nextMessages);
 };
 
 const revokeObjectUrl = (objectUrl: string | undefined) => {
@@ -90,6 +91,48 @@ const revokeMessageObjectUrls = (messages: ChatMessage[]) => {
     revokeObjectUrl(message.file?.objectUrl);
   }
 };
+
+const limitMessagesInMemory = (messages: ChatMessage[]) => {
+  const overflowCount = messages.length - MAX_CHAT_MESSAGES;
+  if (overflowCount <= 0) return messages;
+
+  revokeMessageObjectUrls(messages.slice(0, overflowCount));
+  return messages.slice(overflowCount);
+};
+
+const updateTransferStats = (
+  previous: ChatFileTransfer,
+  patch: Partial<ChatFileTransfer>
+): ChatFileTransfer => {
+  const now = Date.now();
+  const next: ChatFileTransfer = {
+    ...previous,
+    ...patch,
+  };
+
+  if (next.status === 'transferring') {
+    next.startedAt = previous.startedAt ?? now;
+    next.updatedAt = now;
+    const elapsedSeconds = Math.max((next.updatedAt - next.startedAt) / 1000, 0);
+    next.bytesPerSecond = elapsedSeconds > 0 ? next.bytesTransferred / elapsedSeconds : previous.bytesPerSecond;
+  } else if (previous.startedAt) {
+    next.startedAt = previous.startedAt;
+    next.updatedAt = now;
+    next.bytesPerSecond = previous.bytesPerSecond;
+  }
+
+  return next;
+};
+
+const createFileTransferFromPatch = (
+  id: string,
+  patch: Partial<ChatFileTransfer>
+): ChatFileTransfer => ({
+  id: patch.id ?? id,
+  status: patch.status ?? 'transferring',
+  bytesTransferred: patch.bytesTransferred ?? 0,
+  ...patch,
+});
 
 purgePersistedChatStorage();
 
@@ -205,11 +248,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ...message,
         file: file ? { ...message.file, ...file } as ChatFileAttachment : message.file,
         fileTransfer: message.fileTransfer
-          ? {
-              ...message.fileTransfer,
-              ...transferPatch,
-            }
-          : message.fileTransfer,
+          ? updateTransferStats(message.fileTransfer, transferPatch)
+          : message.file
+            ? updateTransferStats(createFileTransferFromPatch(id, transferPatch), transferPatch)
+            : message.fileTransfer,
       };
       revokeReplacedObjectUrl(message, nextMessage);
       return nextMessage;

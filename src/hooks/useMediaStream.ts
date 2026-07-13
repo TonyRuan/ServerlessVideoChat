@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  createMediaStreamLifecycle,
+  type MediaStreamLifecycle,
+} from '../lib/mediaStreamLifecycle';
 
 interface MediaStreamState {
   stream: MediaStream | null;
@@ -29,17 +33,20 @@ export function useMediaStream() {
     isAudioEnabled: true,
     isVideoEnabled: true,
   });
-  
+
   const [currentQuality, setCurrentQuality] = useState<VideoQuality>(VIDEO_QUALITIES[0]);
-  const streamRef = useRef<MediaStream | null>(null);
+  const lifecycleRef = useRef<MediaStreamLifecycle<MediaStream> | null>(null);
   const audioEnabledRef = useRef(true);
   const videoEnabledRef = useRef(true);
 
+  if (!lifecycleRef.current) {
+    lifecycleRef.current = createMediaStreamLifecycle<MediaStream>();
+  }
+
+  const lifecycle = lifecycleRef.current;
+
   const initializeStream = useCallback(async (quality: VideoQuality = VIDEO_QUALITIES[0]) => {
-    // Stop existing tracks if any
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
+    const requestGeneration = lifecycle.beginRequest();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -60,9 +67,12 @@ export function useMediaStream() {
         track.enabled = videoEnabledRef.current;
       });
 
-      streamRef.current = stream;
+      if (!lifecycle.commit(requestGeneration, stream)) {
+        return null;
+      }
+
       setCurrentQuality(quality);
-      setState(prev => ({ 
+      setState(prev => ({
         ...prev, 
         stream, 
         error: null,
@@ -71,58 +81,59 @@ export function useMediaStream() {
       }));
       return stream;
     } catch (err) {
-      console.error('Error accessing media devices:', err);
-      setState(prev => ({ ...prev, error: err as Error }));
+      if (lifecycle.isCurrent(requestGeneration)) {
+        console.error('Error accessing media devices:', err);
+        setState(prev => ({ ...prev, error: err as Error }));
+      }
       return null;
     }
-  }, []);
+  }, [lifecycle]);
 
   const changeQuality = useCallback(async (quality: VideoQuality) => {
     return initializeStream(quality);
   }, [initializeStream]);
 
   const toggleAudio = useCallback(() => {
-    if (streamRef.current) {
-      const audioTrack = streamRef.current.getAudioTracks()[0];
+    const stream = lifecycle.current();
+    if (stream) {
+      const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         audioEnabledRef.current = audioTrack.enabled;
         setState(prev => ({ ...prev, isAudioEnabled: audioTrack.enabled }));
       }
     }
-  }, []);
+  }, [lifecycle]);
 
   const toggleVideo = useCallback(() => {
-    if (streamRef.current) {
-      const videoTrack = streamRef.current.getVideoTracks()[0];
+    const stream = lifecycle.current();
+    if (stream) {
+      const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         videoEnabledRef.current = videoTrack.enabled;
         setState(prev => ({ ...prev, isVideoEnabled: videoTrack.enabled }));
       }
     }
-  }, []);
+  }, [lifecycle]);
 
   const cleanup = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-      audioEnabledRef.current = true;
-      videoEnabledRef.current = true;
-      setState({
-        stream: null,
-        error: null,
-        isAudioEnabled: true,
-        isVideoEnabled: true,
-      });
-    }
-  }, []);
+    lifecycle.cleanup();
+    audioEnabledRef.current = true;
+    videoEnabledRef.current = true;
+    setState({
+      stream: null,
+      error: null,
+      isAudioEnabled: true,
+      isVideoEnabled: true,
+    });
+  }, [lifecycle]);
 
   useEffect(() => {
     return () => {
-      cleanup();
+      lifecycle.cleanup();
     };
-  }, [cleanup]);
+  }, [lifecycle]);
 
   return {
     ...state,

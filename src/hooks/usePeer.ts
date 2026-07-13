@@ -8,6 +8,10 @@ import {
   type IceConfigEnvironment,
   type TurnMode,
 } from '../lib/iceConfig';
+import {
+  createDataConnectionOptions,
+  type DataConnectionChannel,
+} from '../lib/dataConnectionPayload';
 import type { CallSessionRole } from '../lib/callSession';
 
 interface PeerState {
@@ -28,6 +32,7 @@ export interface PeerConnectionMetadata {
   role: CallSessionRole;
   turnMode?: TurnMode;
   peerId?: string;
+  channel?: DataConnectionChannel;
 }
 
 const getIceConfigEnvironment = (): IceConfigEnvironment => ({
@@ -110,11 +115,19 @@ export function usePeer() {
     return call;
   }, []);
 
-  const connectToPeer = useCallback((peerId: string, metadata?: PeerConnectionMetadata) => {
+  const connectToPeer = useCallback((
+    peerId: string,
+    metadata?: PeerConnectionMetadata,
+    channel: DataConnectionChannel = 'control'
+  ) => {
     if (!peerRef.current) return null;
 
     const conn = peerRef.current.connect(peerId, {
-      metadata,
+      ...createDataConnectionOptions(channel),
+      metadata: {
+        ...metadata,
+        channel,
+      },
     });
     return conn;
   }, []);

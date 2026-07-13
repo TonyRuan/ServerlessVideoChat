@@ -39,6 +39,9 @@ export interface ChatFileTransfer {
   id: string;
   status: ChatFileTransferStatus;
   bytesTransferred: number;
+  startedAt?: number;
+  updatedAt?: number;
+  bytesPerSecond?: number;
   error?: string;
   saveMode?: 'file-system' | 'memory';
 }

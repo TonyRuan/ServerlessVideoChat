@@ -16,6 +16,10 @@ import {
   getMemoryFileFallbackLimitLabel,
 } from '../lib/fileTransferLimits';
 import {
+  formatFileTransferSpeed,
+  formatFileTransferTimeRemaining,
+} from '../lib/fileTransferStats';
+import {
   getFileFromDataTransfer,
   getFileFromFiles,
   getImageFileFromClipboardItems,
@@ -135,6 +139,15 @@ const getFileTransferLabel = (message: ChatMessage) => {
   return null;
 };
 
+const getFileTransferStatsLabel = (message: ChatMessage) => {
+  const transfer = message.fileTransfer;
+  if (!transfer || !message.file || transfer.status !== 'transferring' || !transfer.bytesPerSecond) return null;
+
+  const remainingBytes = Math.max(0, message.file.size - transfer.bytesTransferred);
+  const remainingSeconds = remainingBytes / transfer.bytesPerSecond;
+  return `速度 ${formatFileTransferSpeed(transfer.bytesPerSecond)} · 剩余 ${formatFileTransferTimeRemaining(remainingSeconds)}`;
+};
+
 export function ChatPanel({
   isOpen,
   isConnected,
@@ -161,13 +174,38 @@ export function ChatPanel({
   const [isDragging, setIsDragging] = useState(false);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
+  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const dragOffsetRef = useRef<ChatPanelPosition | null>(null);
   const dragPositionRef = useRef<ChatPanelPosition | null>(null);
   const fileDragDepthRef = useRef(0);
 
   const canSend = isConnected && isSecure && !isSending && Boolean(draftText.trim() || selectedImage || selectedFile);
+
+  const restorePreviousFocus = useCallback(() => {
+    const previouslyFocusedElement = previouslyFocusedElementRef.current;
+    previouslyFocusedElementRef.current = null;
+    if (previouslyFocusedElement?.isConnected) {
+      previouslyFocusedElement.focus();
+    }
+  }, []);
+
+  const handleClose = useCallback(() => {
+    restorePreviousFocus();
+    onClose();
+  }, [onClose, restorePreviousFocus]);
+
+  useEffect(() => {
+    if (!isOpen || typeof document === 'undefined' || typeof window === 'undefined') return;
+
+    const activeElement = document.activeElement;
+    previouslyFocusedElementRef.current = activeElement instanceof window.HTMLElement ? activeElement : null;
+    textareaRef.current?.focus();
+
+    return restorePreviousFocus;
+  }, [isOpen, restorePreviousFocus]);
 
   useEffect(() => {
     if (isOpen) {
@@ -396,7 +434,15 @@ export function ChatPanel({
     <>
       <section
         ref={sectionRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chat-panel-title"
         style={panelStyle}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && !previewImage) {
+            handleClose();
+          }
+        }}
         onDragEnter={handleFileDragEnter}
         onDragOver={handleFileDragOver}
         onDragLeave={handleFileDragLeave}
@@ -422,7 +468,9 @@ export function ChatPanel({
           onPointerDown={handleDragStart}
         >
           <div>
-            <h2 className="text-sm font-semibold">聊天</h2>
+            <h2 id="chat-panel-title" className="text-sm font-semibold">
+              聊天
+            </h2>
             <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-400">
               <LockKeyhole className={cn('h-3.5 w-3.5', isSecure ? 'text-green-400' : 'text-amber-400')} />
               {connectionIssue ? '网络直连失败' : isSecure ? '加密通道已就绪' : isConnected ? '正在建立加密通道' : '等待聊天连接'}
@@ -433,7 +481,8 @@ export function ChatPanel({
             size="icon"
             className="h-8 w-8 rounded-full text-gray-300 hover:bg-gray-800"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={onClose}
+            onClick={handleClose}
+            aria-label="关闭聊天"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -494,6 +543,11 @@ export function ChatPanel({
                             <span className={cn('block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
                               {formatAttachmentSize(message.file.size)}
                             </span>
+                            {getFileTransferLabel(message) && (
+                              <span className={cn('mt-1 block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
+                                {getFileTransferLabel(message)}
+                              </span>
+                            )}
                           </span>
                           <Download className="h-4 w-4 shrink-0" />
                         </a>
@@ -515,6 +569,11 @@ export function ChatPanel({
                           {getFileTransferLabel(message) && (
                             <p className={cn('mt-2 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
                               {getFileTransferLabel(message)}
+                            </p>
+                          )}
+                          {getFileTransferStatsLabel(message) && (
+                            <p className={cn('mt-1 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
+                              {getFileTransferStatsLabel(message)}
                             </p>
                           )}
                           {message.fileTransfer?.status === 'offered' && !isMine && (
@@ -574,7 +633,13 @@ export function ChatPanel({
                 <p className="truncate text-xs text-gray-200">{selectedImage.name}</p>
                 <p className="text-[11px] text-gray-500">{formatAttachmentSize(selectedImage.size)}</p>
               </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full text-gray-300" onClick={() => setSelectedImage(null)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-full text-gray-300"
+                onClick={() => setSelectedImage(null)}
+                aria-label="移除待发图片"
+              >
                 <X className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -589,7 +654,13 @@ export function ChatPanel({
                 <p className="truncate text-xs text-gray-200">{selectedFile.name}</p>
                 <p className="text-[11px] text-gray-500">{formatAttachmentSize(selectedFile.size)}</p>
               </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7 rounded-full text-gray-300" onClick={() => setSelectedFile(null)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 rounded-full text-gray-300"
+                onClick={() => setSelectedFile(null)}
+                aria-label="移除待发文件"
+              >
                 <X className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -610,10 +681,12 @@ export function ChatPanel({
               className="h-10 w-10 rounded-full bg-gray-800 text-gray-100 hover:bg-gray-700"
               onClick={() => fileInputRef.current?.click()}
               title="选择文件"
+              aria-label="选择文件"
             >
               <Paperclip className="h-5 w-5" />
             </Button>
             <textarea
+              ref={textareaRef}
               value={draftText}
               onChange={(event) => setDraftText(event.target.value)}
               onPaste={(event) => void handlePaste(event)}
@@ -634,6 +707,7 @@ export function ChatPanel({
               onClick={() => void handleSend()}
               disabled={!canSend}
               title={!isSecure ? '加密通道建立后可发送' : '发送'}
+              aria-label="发送消息"
             >
               <Send className="h-4 w-4" />
             </Button>
@@ -647,6 +721,7 @@ export function ChatPanel({
           className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4"
           role="dialog"
           aria-modal="true"
+          aria-label={`图片预览：${previewImage.name}`}
           onClick={() => setPreviewImage(null)}
         >
           <div className="relative max-h-[92vh] max-w-[94vw]" onClick={(event) => event.stopPropagation()}>
@@ -656,6 +731,7 @@ export function ChatPanel({
               className="absolute right-2 top-2 z-10 h-9 w-9 rounded-full bg-gray-900/80 text-white hover:bg-gray-800"
               onClick={() => setPreviewImage(null)}
               title="关闭"
+              aria-label="关闭图片预览"
             >
               <X className="h-4 w-4" />
             </Button>

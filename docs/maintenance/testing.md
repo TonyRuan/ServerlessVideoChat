@@ -4,6 +4,7 @@ Required checks before claiming a code change is ready:
 
 ```powershell
 npm test
+npm run check
 npm run lint
 npm run build
 ```
@@ -21,6 +22,13 @@ npm test -- src/lib/mediaStats.test.ts
 npm test -- src/lib/networkDiagnostics.test.ts
 npm test -- src/components/NetworkDiagnosticsPanel.test.tsx
 npm test -- src/components/InviteLinkCard.test.tsx
+npm test -- src/lib/callConnectionPolicy.test.ts
+npm test -- src/lib/callSession.test.ts
+npm test -- src/lib/fileTransferBinary.test.ts
+npm test -- src/lib/fileTransferFlow.test.ts
+npm test -- src/lib/realtimeProtocol.test.ts
+npm test -- src/components/CallControls.test.tsx
+npm test -- src/components/ChatPanel.test.tsx
 ```
 
 ## Test Style
@@ -33,7 +41,7 @@ For display-only component behavior, use:
 import { renderToStaticMarkup } from 'react-dom/server';
 ```
 
-For protocol, session, TURN, and stats helpers, test pure functions directly.
+For protocol, session, file-transfer flow, TURN, and stats helpers, test pure functions directly. Protocol tests should cover malformed, oversized, non-finite, stale, and wrong-peer payloads in addition to happy paths.
 
 ## Browser Validation Notes
 
@@ -46,6 +54,8 @@ Common surfaces to validate when relevant:
 - Waiting state invite link and QR code: host opens `/call`, PeerJS becomes ready, and `myId` exists.
 - Compact diagnostics: collapsed panel shows only connection status; expanded panel shows full debug details.
 - Bottom controls: fixed overlay should not cover waiting-state content on small screens.
+- Hidden desktop/mobile control variants must be inert and excluded from the accessibility tree.
+- Join flow must reject bare Peer IDs and accept a complete valid invite URL.
 
 ## Lightweight Doc-Only Check
 

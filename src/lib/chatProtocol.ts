@@ -12,7 +12,9 @@ import { isAcceptedChatImageType } from './chatAttachments';
 import { isValidCallSessionId, isValidPeerId, type CallSessionRole } from './callSession';
 
 const FILE_MIME_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
-export const CHAT_FILE_STREAM_CHUNK_BYTES = 32 * 1024;
+export const MAX_CHAT_TEXT_CHARS = 10_000;
+export const CHAT_FILE_STREAM_CHUNK_BYTES = 256 * 1024;
+export const CHAT_FILE_CREDIT_WINDOW_BYTES = 1024 * 1024;
 const CHAT_FILE_STREAM_CHUNK_DATA_CHARS = Math.ceil(CHAT_FILE_STREAM_CHUNK_BYTES / 3) * 4;
 
 export interface WireChatMessage {
@@ -50,10 +52,12 @@ export interface WireChatFileOfferPayload {
 
 export interface WireChatFileAcceptPayload {
   type: 'CHAT_FILE_ACCEPT';
-  version: 1;
+  version: 2;
   transferId: string;
   from: string;
   saveMode: WireChatFileSaveMode;
+  acknowledgedOffset: 0;
+  creditBytes: number;
 }
 
 export interface WireChatFileDeclinePayload {
@@ -61,6 +65,32 @@ export interface WireChatFileDeclinePayload {
   version: 1;
   transferId: string;
   from: string;
+}
+
+export interface WireChatFileCreditPayload {
+  type: 'CHAT_FILE_CREDIT';
+  version: 2;
+  transferId: string;
+  from: string;
+  acknowledgedOffset: number;
+  creditBytes: number;
+  resume: boolean;
+}
+
+export interface WireChatFileCompletePayload {
+  type: 'CHAT_FILE_COMPLETE';
+  version: 2;
+  transferId: string;
+  from: string;
+  bytesReceived: number;
+}
+
+export interface WireChatFileErrorPayload {
+  type: 'CHAT_FILE_ERROR';
+  version: 2;
+  transferId: string;
+  from: string;
+  message: string;
 }
 
 export interface WireChatFileChunkPayload {
@@ -129,14 +159,17 @@ export function createWireChatFileOffer(message: ChatMessage, from: string): Wir
 export function createWireChatFileAccept(
   transferId: string,
   from: string,
-  saveMode: WireChatFileSaveMode
+  saveMode: WireChatFileSaveMode,
+  creditBytes = CHAT_FILE_CREDIT_WINDOW_BYTES
 ): WireChatFileAcceptPayload {
   return {
     type: 'CHAT_FILE_ACCEPT',
-    version: 1,
+    version: 2,
     transferId,
     from,
     saveMode,
+    acknowledgedOffset: 0,
+    creditBytes,
   };
 }
 
@@ -146,6 +179,52 @@ export function createWireChatFileDecline(transferId: string, from: string): Wir
     version: 1,
     transferId,
     from,
+  };
+}
+
+export function createWireChatFileCredit(
+  transferId: string,
+  from: string,
+  acknowledgedOffset: number,
+  creditBytes = CHAT_FILE_CREDIT_WINDOW_BYTES,
+  resume = false
+): WireChatFileCreditPayload {
+  return {
+    type: 'CHAT_FILE_CREDIT',
+    version: 2,
+    transferId,
+    from,
+    acknowledgedOffset,
+    creditBytes,
+    resume,
+  };
+}
+
+export function createWireChatFileComplete(
+  transferId: string,
+  from: string,
+  bytesReceived: number
+): WireChatFileCompletePayload {
+  return {
+    type: 'CHAT_FILE_COMPLETE',
+    version: 2,
+    transferId,
+    from,
+    bytesReceived,
+  };
+}
+
+export function createWireChatFileError(
+  transferId: string,
+  from: string,
+  message: string
+): WireChatFileErrorPayload {
+  return {
+    type: 'CHAT_FILE_ERROR',
+    version: 2,
+    transferId,
+    from,
+    message,
   };
 }
 
@@ -257,12 +336,11 @@ export function isWireChatPayload(payload: unknown): payload is WireChatPayload 
   if (typeof record.message !== 'object' || record.message === null) return false;
 
   const message = record.message as Record<string, unknown>;
-  if (typeof message.id !== 'string') return false;
-  if (typeof message.from !== 'string') return false;
-  if (typeof message.createdAt !== 'number') return false;
+  if (!isBoundedIdentifier(message.id) || !isBoundedIdentifier(message.from)) return false;
+  if (!isValidCreatedAt(message.createdAt)) return false;
   if (message.kind !== 'text' && message.kind !== 'image' && message.kind !== 'file' && message.kind !== 'mixed') return false;
 
-  const hasText = typeof message.text === 'string' && message.text.trim().length > 0;
+  const hasText = isValidChatText(message.text);
   const hasImage = isChatImageAttachment(message.image);
 
   if (message.image !== undefined && !hasImage) return false;
@@ -277,20 +355,32 @@ function isNonEmptyString(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isBoundedIdentifier(value: unknown) {
+  return isNonEmptyString(value) && (value as string).length <= 128;
+}
+
+function isValidCreatedAt(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isValidChatText(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CHAT_TEXT_CHARS;
+}
+
 export function isWireChatFileOfferPayload(payload: unknown): payload is WireChatFileOfferPayload {
   if (typeof payload !== 'object' || payload === null) return false;
 
   const record = payload as Record<string, unknown>;
   if (record.type !== 'CHAT_FILE_OFFER' || record.version !== 1) return false;
-  if (!isNonEmptyString(record.transferId) || !isNonEmptyString(record.from)) return false;
+  if (!isBoundedIdentifier(record.transferId) || !isBoundedIdentifier(record.from)) return false;
   if (typeof record.message !== 'object' || record.message === null) return false;
 
   const message = record.message as Record<string, unknown>;
   if (message.id !== record.transferId) return false;
   if (message.kind !== 'file' && message.kind !== 'mixed') return false;
-  if (typeof message.createdAt !== 'number') return false;
+  if (!isValidCreatedAt(message.createdAt)) return false;
 
-  const hasText = typeof message.text === 'string' && message.text.trim().length > 0;
+  const hasText = isValidChatText(message.text);
   if (message.kind === 'file' && message.text !== undefined) return false;
   if (message.kind === 'mixed' && !hasText) return false;
   return isChatFileMetadata(message.file);
@@ -302,10 +392,12 @@ export function isWireChatFileAcceptPayload(payload: unknown): payload is WireCh
   const record = payload as Record<string, unknown>;
   return (
     record.type === 'CHAT_FILE_ACCEPT' &&
-    record.version === 1 &&
+    record.version === 2 &&
     isNonEmptyString(record.transferId) &&
     isNonEmptyString(record.from) &&
-    (record.saveMode === 'file-system' || record.saveMode === 'memory')
+    (record.saveMode === 'file-system' || record.saveMode === 'memory') &&
+    record.acknowledgedOffset === 0 &&
+    isValidCreditBytes(record.creditBytes)
   );
 }
 
@@ -318,6 +410,62 @@ export function isWireChatFileDeclinePayload(payload: unknown): payload is WireC
     record.version === 1 &&
     isNonEmptyString(record.transferId) &&
     isNonEmptyString(record.from)
+  );
+}
+
+function isSafeByteOffset(value: unknown, allowZero = true) {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= (allowZero ? 0 : 1) &&
+    value <= MAX_CHAT_FILE_BYTES
+  );
+}
+
+function isValidCreditBytes(value: unknown) {
+  return isSafeByteOffset(value, false) && (value as number) <= CHAT_FILE_CREDIT_WINDOW_BYTES;
+}
+
+export function isWireChatFileCreditPayload(payload: unknown): payload is WireChatFileCreditPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_FILE_CREDIT' &&
+    record.version === 2 &&
+    isNonEmptyString(record.transferId) &&
+    isNonEmptyString(record.from) &&
+    isSafeByteOffset(record.acknowledgedOffset) &&
+    isValidCreditBytes(record.creditBytes) &&
+    typeof record.resume === 'boolean'
+  );
+}
+
+export function isWireChatFileCompletePayload(payload: unknown): payload is WireChatFileCompletePayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_FILE_COMPLETE' &&
+    record.version === 2 &&
+    isNonEmptyString(record.transferId) &&
+    isNonEmptyString(record.from) &&
+    isSafeByteOffset(record.bytesReceived, false)
+  );
+}
+
+export function isWireChatFileErrorPayload(payload: unknown): payload is WireChatFileErrorPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_FILE_ERROR' &&
+    record.version === 2 &&
+    isNonEmptyString(record.transferId) &&
+    isNonEmptyString(record.from) &&
+    typeof record.message === 'string' &&
+    record.message.trim().length > 0 &&
+    record.message.length <= 240
   );
 }
 

@@ -16,6 +16,8 @@
   - 聊天记录和输入草稿默认只保存在当前页面内存，刷新或关闭页面后清空，不长期写入浏览器存储。
   - 支持文字、JPG、PNG、WebP、GIF，单张图片上限 10MiB。
   - 支持点击选择、从剪贴板粘贴、拖拽上传图片，单击图片可放大查看，桌面端可拖动聊天窗口位置。
+  - 非图片文件最大 2GiB；接收端确认并选择保存位置后才开始传输，不支持直接写盘的浏览器使用最多 10MiB 的内存下载回退。
+  - 文件数据使用独立可靠 DataConnection、256KiB 二进制 AES-GCM 分片和 1MiB 接收端信用窗口；断线后按接收端已写入偏移恢复，收到最终保存确认后才标记发送完成。
 - **视频带宽控制**：
   - SDP 协商优先级为 `AV1 > VP9 > H265 > 其他`。
   - 页面左上角会显示当前协商到的视频 codec 和上下行带宽估算。
@@ -38,12 +40,14 @@
 src/
 ├── components/
 │   ├── Button.tsx        # 基础 UI 组件
-│   ├── ChatPanel.tsx     # 图文聊天、图片预览、拖拽上传、拖动位置和加密状态
+│   ├── CallControls.tsx  # 桌面/移动通话控制条和无障碍隐藏状态
+│   ├── ChatPanel.tsx     # 图文聊天、文件接收、图片预览、焦点管理和加密状态
 │   ├── ClickHeart.tsx    # 连点爱心动画组件（带防误触、Zustand 状态分发）
 │   ├── NetworkDiagnosticsPanel.tsx # WebRTC 状态、带宽、TURN 和网络环境诊断
 │   └── SettingsMenu.tsx  # 画质和画面自适应设置菜单
 ├── hooks/
 │   ├── useMediaStream.ts # 本地摄像头/麦克风流管理、画质切换
+│   ├── useAutoHideControls.ts # 通话控件活动检测和自动隐藏
 │   └── usePeer.ts        # PeerJS 实例管理、ICE Server (STUN/TURN) 配置、信令交互
 ├── pages/
 │   ├── Home.tsx          # 首页，加入/创建房间入口
@@ -54,6 +58,9 @@ src/
 ├── lib/
 │   ├── chatCrypto.ts     # 聊天 ECDH + AES-GCM 应用层加密
 │   ├── chatProtocol.ts   # 聊天和 session resume wire payload 转换和校验
+│   ├── fileTransferBinary.ts # 无 base64 的版本化文件二进制帧
+│   ├── fileTransferFlow.ts # 接收端信用窗口、ACK 和恢复偏移规则
+│   ├── realtimeProtocol.ts # 画质和爱心控制消息严格校验
 │   ├── callSession.ts    # URL hash session 解析、生成和邀请链接构造
 │   ├── buildInfo.ts      # 构建版本和编译时间格式化
 │   ├── iceConfig.ts      # STUN/TURN RTCConfiguration 生成和 TURN mode 解析
@@ -64,7 +71,9 @@ src/
 └── main.tsx              # 应用入口
 public/
 ├── _redirects            # Cloudflare Pages 的 SPA 路由重定向配置
-└── 404.html              # GitHub Pages 的 SPA 路由兜底重定向逻辑
+├── 404.html              # GitHub Pages 的 SPA 路由兜底重定向逻辑
+├── apple-touch-icon.png  # iOS 主屏幕图标
+└── favicon.png           # 浏览器标签页图标
 ```
 
 ---
@@ -126,6 +135,8 @@ public/
 
 ## 🔧 常见问题与排查 (Troubleshooting)
 
+首页加入框只接受创建者分享的完整邀请链接。裸 Peer ID 不含 session，无法安全关联同一会议，因此会被拒绝；手机可直接扫描等待页二维码加入。
+
 ### 1. 通话已接通，但看不到对方画面（或一直显示 Waiting）
 请查看页面左上角的 **诊断面板**：
 - **`ICE: failed` 或 `disconnected`**：说明 WebRTC NAT 打洞失败，底层媒体连接未建立。这是跨设备/跨网络最常见的问题。
@@ -142,7 +153,7 @@ public/
 ---
 
 ## 🤖 供 AI 助手参考的上下文 (AI Context)
-- **WebRTC 连接流**：发端在 `CallPage.tsx` 的 `useEffect` 中调用 `usePeer` 的 `callPeer`，接收端在监听到 `onIncomingCall` 时调用 `call.answer(stream)`。
-- **数据同步**：连点爱心、画质切换和加密聊天都走 PeerJS DataConnection。聊天层先交换临时 ECDH 公钥，再发送 AES-GCM 密文。
+- **WebRTC 连接流**：guest 是唯一拨号方，host 只接受连接。连接元数据必须同时匹配 session、相反角色和实际 `connection.peer`；guest 断线后按短指数退避重拨，host 回到等待状态。
+- **数据同步**：连点爱心、画质切换、session、聊天和文件控制走 `control` DataConnection；加密文件字节走独立 `bulk` DataConnection。聊天层先交换临时 ECDH 公钥，再发送 AES-GCM 密文。
 - **TURN 策略**：默认初始 PeerJS 配置会包含 STUN 和已配置的 TURN 候选。URL 或环境变量显式关闭 TURN 时，`CallPage.tsx` 检测到底层传输失败后调用 `usePeer.enableTurnFallback()`，在保留 Peer ID 的前提下切换后续连接配置；caller 会重拨，callee 会等待重连。
 - **环境隔离**：本项目同时兼顾了根域名部署（Cloudflare Pages）和子路径部署（GitHub Pages），在修改路由或构建配置时需同时考虑这两种情况。

@@ -153,6 +153,8 @@ export function NetworkDiagnosticsPanel({
             onClick={() => setIsExpanded((value) => !value)}
             className="rounded-md p-1 text-gray-300 transition hover:bg-gray-700"
             title={isExpanded ? '收起诊断' : '展开诊断'}
+            aria-label={isExpanded ? '收起诊断' : '展开诊断'}
+            aria-expanded={isExpanded}
           >
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>

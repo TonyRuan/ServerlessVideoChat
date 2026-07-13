@@ -2,17 +2,24 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAT_FILE_STREAM_CHUNK_BYTES,
   createWireChatFileAccept,
+  createWireChatFileComplete,
+  createWireChatFileCredit,
   createWireChatFileDecline,
+  createWireChatFileError,
   createWireChatFileOffer,
   createWireChatFileStreamChunk,
   createSessionResumeMessage,
   createWireChatMessage,
   isWireChatFileAcceptPayload,
+  isWireChatFileCompletePayload,
+  isWireChatFileCreditPayload,
   isWireChatFileChunkPayload,
   isWireChatFileDeclinePayload,
+  isWireChatFileErrorPayload,
   isWireChatFileOfferPayload,
   isSessionResumePayload,
   isWireChatPayload,
+  MAX_CHAT_TEXT_CHARS,
 } from './chatProtocol';
 import {
   MAX_CHAT_FILE_BYTES,
@@ -38,6 +45,10 @@ const localMessage: ChatMessage = {
 };
 
 describe('chatProtocol', () => {
+  it('streams file data in 256 KiB chunks', () => {
+    expect(CHAT_FILE_STREAM_CHUNK_BYTES).toBe(256 * 1024);
+  });
+
   it('creates a wire chat payload without local-only fields', () => {
     const payload = createWireChatMessage(localMessage, 'peer-a');
 
@@ -74,6 +85,18 @@ describe('chatProtocol', () => {
         },
       })
     ).toBe(false);
+    const validTextPayload = {
+      type: 'CHAT_MESSAGE',
+      message: { id: 'x', from: 'peer-a', kind: 'text', text: 'hello', createdAt: 1 },
+    };
+    expect(isWireChatPayload({ ...validTextPayload, message: { ...validTextPayload.message, createdAt: Infinity } })).toBe(false);
+    expect(isWireChatPayload({ ...validTextPayload, message: { ...validTextPayload.message, createdAt: Number.NaN } })).toBe(false);
+    expect(isWireChatPayload({ ...validTextPayload, message: { ...validTextPayload.message, id: '' } })).toBe(false);
+    expect(isWireChatPayload({ ...validTextPayload, message: { ...validTextPayload.message, from: '' } })).toBe(false);
+    expect(isWireChatPayload({
+      ...validTextPayload,
+      message: { ...validTextPayload.message, text: 'x'.repeat(MAX_CHAT_TEXT_CHARS + 1) },
+    })).toBe(false);
   });
 
   it('accepts GIF image payloads within the accepted chat limits', () => {
@@ -200,16 +223,36 @@ describe('chatProtocol', () => {
         },
       },
     })).toBe(false);
+    expect(isWireChatFileOfferPayload({
+      ...offer,
+      message: { ...offer.message, createdAt: Infinity },
+    })).toBe(false);
   });
 
   it('creates and validates file accept and decline payloads', () => {
-    const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system');
+    const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system', 1024 * 1024);
     const declined = createWireChatFileDecline('transfer-1', 'peer-b');
 
     expect(isWireChatFileAcceptPayload(accepted)).toBe(true);
     expect(isWireChatFileDeclinePayload(declined)).toBe(true);
     expect(isWireChatFileAcceptPayload({ ...accepted, saveMode: 'unknown' })).toBe(false);
     expect(isWireChatFileDeclinePayload({ ...declined, transferId: '' })).toBe(false);
+  });
+
+  it('creates and validates receiver credit, completion, and transfer errors', () => {
+    const credit = createWireChatFileCredit('transfer-1', 'peer-b', 256 * 1024, 1024 * 1024, true);
+    const complete = createWireChatFileComplete('transfer-1', 'peer-b', 2 * 1024 * 1024);
+    const failed = createWireChatFileError('transfer-1', 'peer-b', '磁盘写入失败');
+
+    expect(isWireChatFileCreditPayload(credit)).toBe(true);
+    expect(isWireChatFileCompletePayload(complete)).toBe(true);
+    expect(isWireChatFileErrorPayload(failed)).toBe(true);
+    expect(isWireChatFileCreditPayload({ ...credit, acknowledgedOffset: Infinity })).toBe(false);
+    expect(isWireChatFileCreditPayload({ ...credit, creditBytes: -1 })).toBe(false);
+    expect(isWireChatFileCreditPayload({ ...credit, resume: 'yes' })).toBe(false);
+    expect(isWireChatFileCompletePayload({ ...complete, bytesReceived: MAX_CHAT_FILE_BYTES + 1 })).toBe(false);
+    expect(isWireChatFileErrorPayload({ ...failed, message: '' })).toBe(false);
+    expect(isWireChatFileErrorPayload({ ...failed, message: 'x'.repeat(241) })).toBe(false);
   });
 
   it('creates and validates stream chunks from raw base64 data', () => {
