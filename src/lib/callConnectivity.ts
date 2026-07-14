@@ -37,5 +37,5 @@ export function getCallConnectionIssue(
     return null;
   }
 
-  return '当前网络直连失败。已收到对方媒体轨道，但没有可用的 WebRTC 传输；视频和图文聊天都需要 TURN 中继。';
+  return 'WebRTC 传输已失败。已收到对方媒体轨道，但当前没有可用链路；请检查网络或 TURN 中继。';
 }

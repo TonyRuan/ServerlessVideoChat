@@ -7,7 +7,10 @@ import type { VideoFitMode } from '../components/SettingsMenu';
 import { CallControls } from '../components/CallControls';
 import { ChatPanel } from '../components/ChatPanel';
 import { InviteLinkCard } from '../components/InviteLinkCard';
-import { NetworkDiagnosticsPanel } from '../components/NetworkDiagnosticsPanel';
+import {
+  NetworkDiagnosticsPanel,
+  type TransportDiagnosticSnapshot,
+} from '../components/NetworkDiagnosticsPanel';
 import { useMediaStream, VIDEO_QUALITIES, type VideoQuality } from '../hooks/useMediaStream';
 import { usePeer } from '../hooks/usePeer';
 import { useAutoHideControls } from '../hooks/useAutoHideControls';
@@ -72,6 +75,7 @@ import {
   buildCallSessionHash,
   buildInviteLink,
   createCallSessionId,
+  DEFAULT_CALL_MEDIA_DEFAULTS,
   parseCallSessionHash,
   resolveCallSessionState,
   type CallSessionState,
@@ -83,36 +87,51 @@ import {
   type CallConnectionStatus,
 } from '../lib/callConnectivity';
 import {
-  dataReconnectDelayMs,
   getDataConnectionChannel,
   isIncomingConnectionMetadataValid,
   isCurrentConnection,
   isPayloadPeerValid,
   isSessionResumePeerValid,
   shouldInitiateOutgoingConnection,
+  shouldInitializeHostWaiting,
   shouldReplaceCurrentMediaConnection,
   shouldReplaceCurrentDataConnection,
-  turnFallbackRoleForSessionRole,
 } from '../lib/callConnectionPolicy';
+import {
+  nextRecoveryTurnMode,
+  peerTransportRecoveryDelayMs,
+  reconnectDelayMs,
+} from '../lib/connectionRecovery';
 import {
   extractConnectionTransferStats,
   extractInboundVideoTransferStats,
   extractOutboundVideoTransferStats,
+  extractTurnUsageFromStats,
   type ConnectionTransferSample,
   type OutboundVideoTransferSample,
   type TurnUsage,
   type VideoTransferSample,
 } from '../lib/mediaStats';
+import { replaceNegotiatedMediaTrack } from '../lib/mediaDevicePolicy';
 import { preferVideoCodecsInSdp } from '../lib/videoCodecPreference';
 import {
-  deriveTurnFallbackAction,
   turnFallbackStatusLabel,
   type TurnFallbackStatus,
 } from '../lib/turnFallback';
 import { cn } from '../lib/utils';
 import { isHeartPayload, isQualityChangePayload } from '../lib/realtimeProtocol';
+import { watchPeerTransport } from '../lib/transportWatchdog';
 
 const FILE_TRANSFER_BUFFER_POLL_MS = 20;
+const EMPTY_TRANSPORT_DIAGNOSTIC: TransportDiagnosticSnapshot = {
+  iceState: '',
+  connectionState: '',
+  turnUsage: {
+    isUsingTurn: null,
+    localCandidateType: null,
+    remoteCandidateType: null,
+  },
+};
 
 interface OutgoingFileTransferState {
   file: File;
@@ -198,7 +217,11 @@ const fileToChatAttachment = (file: File): ChatFileAttachment => ({
 });
 
 const isSameCallSession = (a: CallSessionState, b: CallSessionState) =>
-  a.sessionId === b.sessionId && a.role === b.role && a.peerId === b.peerId;
+  a.sessionId === b.sessionId
+  && a.role === b.role
+  && a.peerId === b.peerId
+  && a.mediaDefaults.audioEnabled === b.mediaDefaults.audioEnabled
+  && a.mediaDefaults.videoEnabled === b.mediaDefaults.videoEnabled;
 
 const readFileSlice = async (file: File, offset: number) => {
   const slice = file.slice(offset, Math.min(file.size, offset + CHAT_FILE_STREAM_CHUNK_BYTES));
@@ -212,8 +235,10 @@ export default function CallPage() {
   const { 
     stream, 
     error: streamError, 
-    isAudioEnabled, 
-    isVideoEnabled, 
+    isAudioEnabled,
+    isVideoEnabled,
+    isAudioPending,
+    isVideoPending,
     initializeStream, 
     toggleAudio, 
     toggleVideo, 
@@ -231,14 +256,19 @@ export default function CallPage() {
     onIncomingData,
     turnMode,
     hasTurnConfig,
-    enableTurnFallback,
+    applyTurnMode,
+    turnCredentialSource,
+    turnCredentialExpiresAt,
   } = usePeer();
   const [callSession, setCallSession] = useState<CallSessionState>(() =>
     parseCallSessionHash(location.hash) ?? {
       sessionId: createCallSessionId(),
       role: remotePeerId ? 'guest' : 'host',
+      mediaDefaults: { ...DEFAULT_CALL_MEDIA_DEFAULTS },
     }
   );
+  const initialAudioEnabled = callSession.mediaDefaults.audioEnabled;
+  const initialVideoEnabled = callSession.mediaDefaults.videoEnabled;
 
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<CallConnectionStatus>('initializing');
@@ -266,13 +296,14 @@ export default function CallPage() {
     localCandidateType: null,
     remoteCandidateType: null,
   });
+  const [controlTransport, setControlTransport] = useState<TransportDiagnosticSnapshot>(EMPTY_TRANSPORT_DIAGNOSTIC);
+  const [bulkTransport, setBulkTransport] = useState<TransportDiagnosticSnapshot>(EMPTY_TRANSPORT_DIAGNOSTIC);
   const [remotePlayError, setRemotePlayError] = useState<string>('');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isDataConnected, setIsDataConnected] = useState(false);
   const [isChatSecure, setIsChatSecure] = useState(false);
   const [conversationPeerId, setConversationPeerId] = useState<string | null>(remotePeerId ?? null);
-  const [turnFallbackAttempted, setTurnFallbackAttempted] = useState(false);
   const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [, setMediaReconnectCount] = useState(0);
@@ -291,12 +322,18 @@ export default function CallPage() {
   const outboundVideoSampleRef = useRef<OutboundVideoTransferSample | null>(null);
   const connectionSampleRef = useRef<ConnectionTransferSample | null>(null);
   const pcCleanupRef = useRef<(() => void) | null>(null);
+  const controlWatchdogCleanupRef = useRef<(() => void) | null>(null);
+  const bulkWatchdogCleanupRef = useRef<(() => void) | null>(null);
   const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
   const chatCryptoPublicKeySentRef = useRef(false);
   const callSessionRef = useRef(callSession);
   const dataReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transportRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transportRecoveryDeadlineRef = useRef<number | null>(null);
+  const beginMediaRecoveryRef = useRef<() => void>(() => undefined);
+  const mediaRecoveryAttemptsRef = useRef(0);
   const reconnectEnabledRef = useRef(true);
   const dataMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
   const bulkMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -332,6 +369,12 @@ export default function CallPage() {
       if (mediaReconnectTimerRef.current) {
         clearTimeout(mediaReconnectTimerRef.current);
       }
+      if (transportRecoveryTimerRef.current) {
+        clearTimeout(transportRecoveryTimerRef.current);
+      }
+      transportRecoveryDeadlineRef.current = null;
+      controlWatchdogCleanupRef.current?.();
+      bulkWatchdogCleanupRef.current?.();
     };
   }, []);
 
@@ -435,6 +478,16 @@ export default function CallPage() {
     turnMode,
     ...(myId ? { peerId: myId } : {}),
   }), [myId, turnMode]);
+
+  const replacePlaceholderTrack = useCallback(async (
+    kind: 'audio' | 'video',
+    replacement: MediaStreamTrack,
+    placeholder: MediaStreamTrack
+  ) => {
+    const peerConnection = callRef.current?.peerConnection;
+    if (!peerConnection) return;
+    await replaceNegotiatedMediaTrack(peerConnection, kind, replacement, placeholder);
+  }, []);
 
   // Handle quality change wrapper
   const handleQualityChange = async (quality: VideoQuality) => {
@@ -850,6 +903,8 @@ export default function CallPage() {
   }, [handleBulkDataMessage]);
 
   const closeCurrentBulkDataConnection = useCallback(() => {
+    bulkWatchdogCleanupRef.current?.();
+    bulkWatchdogCleanupRef.current = null;
     const conn = bulkDataConnRef.current;
     bulkDataConnRef.current = null;
     conn?.close();
@@ -916,6 +971,8 @@ export default function CallPage() {
   }, []);
 
   const closeCurrentDataConnection = useCallback(() => {
+    controlWatchdogCleanupRef.current?.();
+    controlWatchdogCleanupRef.current = null;
     const conn = dataConnRef.current;
     dataConnRef.current = null;
     conn?.close();
@@ -929,7 +986,7 @@ export default function CallPage() {
     })) return;
 
     setDataReconnectCount((count) => {
-      const delayMs = dataReconnectDelayMs(count);
+      const delayMs = reconnectDelayMs(count);
       if (delayMs === null) return count;
 
       if (dataReconnectTimerRef.current) {
@@ -951,7 +1008,7 @@ export default function CallPage() {
     })) return;
 
     setMediaReconnectCount((count) => {
-      const delayMs = dataReconnectDelayMs(count);
+      const delayMs = reconnectDelayMs(count);
       if (delayMs === null) return count;
 
       if (mediaReconnectTimerRef.current) {
@@ -984,10 +1041,17 @@ export default function CallPage() {
       localCandidateType: null,
       remoteCandidateType: null,
     });
+    setControlTransport(EMPTY_TRANSPORT_DIAGNOSTIC);
+    setBulkTransport(EMPTY_TRANSPORT_DIAGNOSTIC);
   }, []);
 
   const closeActiveConnections = useCallback(() => {
     connectionGenerationRef.current += 1;
+    if (transportRecoveryTimerRef.current) {
+      clearTimeout(transportRecoveryTimerRef.current);
+      transportRecoveryTimerRef.current = null;
+    }
+    transportRecoveryDeadlineRef.current = null;
     pcCleanupRef.current?.();
     pcCleanupRef.current = null;
     callRef.current?.close();
@@ -1002,6 +1066,7 @@ export default function CallPage() {
   }, [closeCurrentDataConnection, resetConnectionStats, resetDataConnection]);
 
   const setupDataConnection = useCallback((conn: DataConnection, generation = connectionGenerationRef.current) => {
+    controlWatchdogCleanupRef.current?.();
     resetChatCryptoState();
     dataConnRef.current = conn;
     setConversationPeerId(conn.peer);
@@ -1033,6 +1098,8 @@ export default function CallPage() {
     const handleClose = () => {
       if (connectionGenerationRef.current !== generation) return;
       if (isCurrentConnection(dataConnRef.current, conn)) {
+        controlWatchdogCleanupRef.current?.();
+        controlWatchdogCleanupRef.current = null;
         dataConnRef.current = null;
         closeCurrentBulkDataConnection();
         resetDataConnection();
@@ -1048,6 +1115,12 @@ export default function CallPage() {
     conn.on('close', handleClose);
     conn.on('error', (err) => {
       console.error('Data connection error:', err);
+      handleClose();
+    });
+
+    controlWatchdogCleanupRef.current = watchPeerTransport(conn.peerConnection, () => {
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(dataConnRef.current, conn)) return;
+      conn.close();
       handleClose();
     });
 
@@ -1069,6 +1142,7 @@ export default function CallPage() {
     conn: DataConnection,
     generation = connectionGenerationRef.current
   ) => {
+    bulkWatchdogCleanupRef.current?.();
     bulkDataConnRef.current = conn;
 
     const handleOpen = () => {
@@ -1093,6 +1167,8 @@ export default function CallPage() {
     const handleClose = () => {
       if (connectionGenerationRef.current !== generation) return;
       if (isCurrentConnection(bulkDataConnRef.current, conn)) {
+        bulkWatchdogCleanupRef.current?.();
+        bulkWatchdogCleanupRef.current = null;
         bulkDataConnRef.current = null;
         for (const transfer of outgoingFileTransfersRef.current.values()) {
           transfer.isStarted = false;
@@ -1112,6 +1188,12 @@ export default function CallPage() {
       handleClose();
     });
 
+    bulkWatchdogCleanupRef.current = watchPeerTransport(conn.peerConnection, () => {
+      if (connectionGenerationRef.current !== generation || !isCurrentConnection(bulkDataConnRef.current, conn)) return;
+      conn.close();
+      handleClose();
+    });
+
     if (conn.open) handleOpen();
   }, [
     myId,
@@ -1123,9 +1205,17 @@ export default function CallPage() {
 
   // Initialize local stream
   useEffect(() => {
-    initializeStream();
+    initializeStream(undefined, {
+      audioEnabled: initialAudioEnabled,
+      videoEnabled: initialVideoEnabled,
+    });
     return () => cleanup();
-  }, [initializeStream, cleanup]);
+  }, [
+    initialAudioEnabled,
+    initialVideoEnabled,
+    initializeStream,
+    cleanup,
+  ]);
 
   const attachPeerConnectionDebug = useCallback((pc: RTCPeerConnection | null | undefined) => {
     pcCleanupRef.current?.();
@@ -1155,48 +1245,81 @@ export default function CallPage() {
     };
   }, []);
 
-  useEffect(() => {
-    const action = deriveTurnFallbackAction({
-      role: turnFallbackRoleForSessionRole(callSession.role),
-      turnMode,
+  const beginMediaRecovery = useCallback(() => {
+    if (!reconnectEnabledRef.current || !callRef.current) return;
+
+    const role = callSessionRef.current.role;
+    const nextTurnMode = nextRecoveryTurnMode({
+      currentTurnMode: turnMode,
       hasTurnConfig,
-      attempted: turnFallbackAttempted,
-      iceState: rtcIceState,
-      peerConnectionState: rtcConnectionState,
+      mediaRecoveryAttempts: mediaRecoveryAttemptsRef.current,
     });
-    if (action === 'none') return;
+    const effectiveTurnMode = nextTurnMode !== turnMode && applyTurnMode(nextTurnMode)
+      ? nextTurnMode
+      : turnMode;
 
-    if (!enableTurnFallback()) return;
-
-    setTurnFallbackAttempted(true);
-    closeActiveConnections();
-
-    if (action === 'retry') {
-      setTurnFallbackStatus('retrying');
-      setConnectionStatus('connecting');
-      setReconnectAttempt((attempt) => attempt + 1);
+    mediaRecoveryAttemptsRef.current += 1;
+    if (!hasTurnConfig || effectiveTurnMode === 'off') {
+      setTurnFallbackStatus(role === 'guest' ? 'reconnecting' : 'waiting-peer');
+    } else if (effectiveTurnMode === 'force') {
+      setTurnFallbackStatus(role === 'guest' ? 'relay-only' : 'waiting');
     } else {
-      setTurnFallbackStatus('waiting');
+      setTurnFallbackStatus(role === 'guest' ? 'retrying' : 'waiting');
+    }
+
+    closeActiveConnections();
+    if (role === 'guest') {
+      setConnectionStatus('connecting');
+      scheduleMediaReconnect();
+    } else {
       setConnectionStatus('waiting');
     }
-  }, [
-    closeActiveConnections,
-    callSession.role,
-    enableTurnFallback,
-    hasTurnConfig,
-    remotePeerId,
-    rtcConnectionState,
-    rtcIceState,
-    turnFallbackAttempted,
-    turnMode,
-  ]);
+  }, [applyTurnMode, closeActiveConnections, hasTurnConfig, scheduleMediaReconnect, turnMode]);
+
+  beginMediaRecoveryRef.current = beginMediaRecovery;
+
+  useEffect(() => {
+    const pc = callRef.current?.peerConnection;
+    const delayMs = pc
+      ? peerTransportRecoveryDelayMs(pc.iceConnectionState, pc.connectionState)
+      : null;
+
+    if (delayMs === null || !reconnectEnabledRef.current) {
+      if (transportRecoveryTimerRef.current) {
+        clearTimeout(transportRecoveryTimerRef.current);
+        transportRecoveryTimerRef.current = null;
+      }
+      transportRecoveryDeadlineRef.current = null;
+      return;
+    }
+
+    const deadline = Date.now() + delayMs;
+    if (
+      transportRecoveryTimerRef.current &&
+      transportRecoveryDeadlineRef.current !== null &&
+      transportRecoveryDeadlineRef.current <= deadline
+    ) {
+      return;
+    }
+
+    if (transportRecoveryTimerRef.current) clearTimeout(transportRecoveryTimerRef.current);
+    transportRecoveryDeadlineRef.current = deadline;
+    const generation = connectionGenerationRef.current;
+    transportRecoveryTimerRef.current = setTimeout(() => {
+      transportRecoveryTimerRef.current = null;
+      transportRecoveryDeadlineRef.current = null;
+      if (generation !== connectionGenerationRef.current || callRef.current?.peerConnection !== pc) return;
+      if (peerTransportRecoveryDelayMs(pc.iceConnectionState, pc.connectionState) === null) return;
+      beginMediaRecoveryRef.current();
+    }, Math.max(0, deadline - Date.now()));
+  }, [rtcConnectionState, rtcIceState]);
 
   useEffect(() => {
     if (turnFallbackStatus === 'idle') return;
     if (connectionStatus !== 'connected') return;
     if (isPeerTransportFailed(rtcIceState, rtcConnectionState)) return;
-    setTurnFallbackStatus('active');
-  }, [connectionStatus, rtcConnectionState, rtcIceState, turnFallbackStatus]);
+    setTurnFallbackStatus(hasTurnConfig && turnMode !== 'off' ? 'active' : 'idle');
+  }, [connectionStatus, hasTurnConfig, rtcConnectionState, rtcIceState, turnFallbackStatus, turnMode]);
 
   // Handle local video stream
   useEffect(() => {
@@ -1214,12 +1337,20 @@ export default function CallPage() {
         
         if (videoTrack) {
           const videoSender = senders.find(s => s.track?.kind === 'video');
-          if (videoSender) videoSender.replaceTrack(videoTrack);
+          if (videoSender) {
+            void videoSender.replaceTrack(videoTrack).catch(err => {
+              console.error('Error replacing video track:', err);
+            });
+          }
         }
-        
+
         if (audioTrack) {
           const audioSender = senders.find(s => s.track?.kind === 'audio');
-          if (audioSender) audioSender.replaceTrack(audioTrack);
+          if (audioSender) {
+            void audioSender.replaceTrack(audioTrack).catch(err => {
+              console.error('Error replacing audio track:', err);
+            });
+          }
         }
       }
     }
@@ -1275,47 +1406,77 @@ export default function CallPage() {
   useEffect(() => {
     const interval = setInterval(async () => {
       const pc = callRef.current?.peerConnection;
-      if (!pc) return;
+      if (pc) {
+        try {
+          const stats = await pc.getStats();
+          const videoTransfer = extractInboundVideoTransferStats(stats, inboundVideoSampleRef.current);
+          const outboundVideoTransfer = extractOutboundVideoTransferStats(stats, outboundVideoSampleRef.current);
+          const connectionTransfer = extractConnectionTransferStats(stats, connectionSampleRef.current);
+          inboundVideoSampleRef.current = videoTransfer.sample;
+          outboundVideoSampleRef.current = outboundVideoTransfer.sample;
+          connectionSampleRef.current = connectionTransfer.sample;
+          let audioBytes = 0;
+          let hasAudio = false;
 
-      try {
-        const stats = await pc.getStats();
-        const videoTransfer = extractInboundVideoTransferStats(stats, inboundVideoSampleRef.current);
-        const outboundVideoTransfer = extractOutboundVideoTransferStats(stats, outboundVideoSampleRef.current);
-        const connectionTransfer = extractConnectionTransferStats(stats, connectionSampleRef.current);
-        inboundVideoSampleRef.current = videoTransfer.sample;
-        outboundVideoSampleRef.current = outboundVideoTransfer.sample;
-        connectionSampleRef.current = connectionTransfer.sample;
-        let audioBytes = 0;
-        let hasAudio = false;
+          stats.forEach((report) => {
+            const r = report as unknown as {
+              type?: string;
+              kind?: string;
+              mediaType?: string;
+              bytesReceived?: number;
+            };
+            if (r.type !== 'inbound-rtp') return;
+            const kind = r.kind ?? r.mediaType;
+            if (kind === 'audio') {
+              hasAudio = true;
+              audioBytes += r.bytesReceived ?? 0;
+            }
+          });
 
-        stats.forEach((report) => {
-          const r = report as unknown as {
-            type?: string;
-            kind?: string;
-            mediaType?: string;
-            bytesReceived?: number;
-          };
-          if (r.type !== 'inbound-rtp') return;
-          const kind = r.kind ?? r.mediaType;
-          if (kind === 'audio') {
-            hasAudio = true;
-            audioBytes += r.bytesReceived ?? 0;
-          }
-        });
-
-        setInboundVideoBytes(videoTransfer.metrics.bytesReceived);
-        setInboundVideoBitrateKbps(videoTransfer.metrics.bitrateKbps);
-        setInboundVideoCodec(videoTransfer.metrics.codec);
-        setOutboundVideoBytes(outboundVideoTransfer.metrics.bytesSent);
-        setOutboundVideoBitrateKbps(outboundVideoTransfer.metrics.bitrateKbps);
-        setOutboundVideoCodec(outboundVideoTransfer.metrics.codec);
-        setInboundAudioBytes(hasAudio ? audioBytes : null);
-        setConnectionUplinkKbps(connectionTransfer.metrics.uplinkKbps);
-        setConnectionDownlinkKbps(connectionTransfer.metrics.downlinkKbps);
-        setTurnUsage(connectionTransfer.metrics.turnUsage);
-      } catch {
-        // Stats may be temporarily unavailable while the peer connection is changing state.
+          setInboundVideoBytes(videoTransfer.metrics.bytesReceived);
+          setInboundVideoBitrateKbps(videoTransfer.metrics.bitrateKbps);
+          setInboundVideoCodec(videoTransfer.metrics.codec);
+          setOutboundVideoBytes(outboundVideoTransfer.metrics.bytesSent);
+          setOutboundVideoBitrateKbps(outboundVideoTransfer.metrics.bitrateKbps);
+          setOutboundVideoCodec(outboundVideoTransfer.metrics.codec);
+          setInboundAudioBytes(hasAudio ? audioBytes : null);
+          setConnectionUplinkKbps(connectionTransfer.metrics.uplinkKbps);
+          setConnectionDownlinkKbps(connectionTransfer.metrics.downlinkKbps);
+          setTurnUsage(connectionTransfer.metrics.turnUsage);
+        } catch {
+          // Stats may be temporarily unavailable while the peer connection is changing state.
+        }
       }
+
+      const sampleDataTransport = async (
+        conn: DataConnection | null,
+        update: React.Dispatch<React.SetStateAction<TransportDiagnosticSnapshot>>
+      ) => {
+        const dataPc = conn?.peerConnection;
+        if (!dataPc) {
+          update(EMPTY_TRANSPORT_DIAGNOSTIC);
+          return;
+        }
+        try {
+          const stats = await dataPc.getStats();
+          update({
+            iceState: dataPc.iceConnectionState,
+            connectionState: dataPc.connectionState,
+            turnUsage: extractTurnUsageFromStats(stats),
+          });
+        } catch {
+          update({
+            iceState: dataPc.iceConnectionState,
+            connectionState: dataPc.connectionState,
+            turnUsage: EMPTY_TRANSPORT_DIAGNOSTIC.turnUsage,
+          });
+        }
+      };
+
+      await Promise.all([
+        sampleDataTransport(dataConnRef.current, setControlTransport),
+        sampleDataTransport(bulkDataConnRef.current, setBulkTransport),
+      ]);
     }, 1000);
 
     return () => clearInterval(interval);
@@ -1343,6 +1504,7 @@ export default function CallPage() {
           if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
+          mediaRecoveryAttemptsRef.current = 0;
           setMediaReconnectCount(0);
           if (mediaReconnectTimerRef.current) {
             clearTimeout(mediaReconnectTimerRef.current);
@@ -1352,31 +1514,13 @@ export default function CallPage() {
 
         call.on('close', () => {
           if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
-          setConnectionStatus('disconnected');
-          setRemoteStream(null);
-          closeCurrentDataConnection();
-          callRef.current = null;
-          resetDataConnection();
-          setRtcIceState('');
-          setRtcConnectionState('');
-          resetConnectionStats();
-          attachPeerConnectionDebug(null);
-          scheduleMediaReconnect();
+          beginMediaRecoveryRef.current();
         });
 
         call.on('error', (err) => {
             if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, call)) return;
             console.error('Call error:', err);
-            setConnectionStatus('disconnected');
-            setRemoteStream(null);
-            closeCurrentDataConnection();
-            callRef.current = null;
-            resetDataConnection();
-            setRtcIceState('');
-            setRtcConnectionState('');
-            resetConnectionStats();
-            attachPeerConnectionDebug(null);
-            scheduleMediaReconnect();
+            beginMediaRecoveryRef.current();
         });
       }
     }
@@ -1418,7 +1562,10 @@ export default function CallPage() {
   useEffect(() => {
     if (!isPeerReady) return;
 
-    if (callSession.role === 'host') {
+    if (shouldInitializeHostWaiting({
+      role: callSession.role,
+      hasActiveMediaConnection: Boolean(callRef.current),
+    })) {
       setConnectionStatus('waiting');
     }
 
@@ -1434,8 +1581,8 @@ export default function CallPage() {
         return;
       }
       const metadata = call.metadata as { turnMode?: string } | undefined;
-      if (metadata?.turnMode && metadata.turnMode !== 'off') {
-        enableTurnFallback();
+      if (metadata?.turnMode === 'on' || metadata?.turnMode === 'force') {
+        applyTurnMode(metadata.turnMode);
       }
       if (callRef.current) {
         const currentTransportState = callRef.current.peerConnection?.connectionState ?? '';
@@ -1470,8 +1617,8 @@ export default function CallPage() {
         return;
       }
       const metadata = conn.metadata as { turnMode?: string } | undefined;
-      if (metadata?.turnMode && metadata.turnMode !== 'off') {
-        enableTurnFallback();
+      if (metadata?.turnMode === 'on' || metadata?.turnMode === 'force') {
+        applyTurnMode(metadata.turnMode);
       }
       if (channel === 'bulk') {
         if (bulkDataConnRef.current && bulkDataConnRef.current !== conn) {
@@ -1505,7 +1652,7 @@ export default function CallPage() {
   }, [
     closeActiveConnections,
     callSession.role,
-    enableTurnFallback,
+    applyTurnMode,
     isPeerReady,
     onIncomingCall,
     onIncomingData,
@@ -1527,41 +1674,18 @@ export default function CallPage() {
       console.log('Received remote stream');
       setRemoteStream(remoteStream);
       setConnectionStatus('connected');
+      mediaRecoveryAttemptsRef.current = 0;
     });
 
     incomingCall.on('close', () => {
       if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, incomingCall)) return;
-      setConnectionStatus('disconnected');
-      setRemoteStream(null);
-      closeCurrentDataConnection();
-      callRef.current = null;
-      setIncomingCall(null);
-      resetDataConnection();
-      setRtcIceState('');
-      setRtcConnectionState('');
-      resetConnectionStats();
-      attachPeerConnectionDebug(null);
-      if (callSessionRef.current.role === 'host') {
-        setConnectionStatus('waiting');
-      }
+      beginMediaRecoveryRef.current();
     });
 
     incomingCall.on('error', (err) => {
       if (connectionGenerationRef.current !== generation || !isCurrentConnection(callRef.current, incomingCall)) return;
       console.error('Incoming call error:', err);
-      setConnectionStatus('disconnected');
-      setRemoteStream(null);
-      closeCurrentDataConnection();
-      callRef.current = null;
-      setIncomingCall(null);
-      resetDataConnection();
-      setRtcIceState('');
-      setRtcConnectionState('');
-      resetConnectionStats();
-      attachPeerConnectionDebug(null);
-      if (callSessionRef.current.role === 'host') {
-        setConnectionStatus('waiting');
-      }
+      beginMediaRecoveryRef.current();
     });
 
     return () => {
@@ -1768,7 +1892,7 @@ export default function CallPage() {
 
   const copyLink = () => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    const link = buildInviteLink(baseUrl, myId, callSession.sessionId);
+    const link = buildInviteLink(baseUrl, myId, callSession.sessionId, callSession.mediaDefaults);
     
     navigator.clipboard.writeText(link);
     setCopied(true);
@@ -1777,13 +1901,14 @@ export default function CallPage() {
 
   const inviteLink = (() => {
     const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    return buildInviteLink(baseUrl, myId, callSession.sessionId);
+    return buildInviteLink(baseUrl, myId, callSession.sessionId, callSession.mediaDefaults);
   })();
 
   const endCall = () => {
     reconnectEnabledRef.current = false;
     if (mediaReconnectTimerRef.current) clearTimeout(mediaReconnectTimerRef.current);
     if (dataReconnectTimerRef.current) clearTimeout(dataReconnectTimerRef.current);
+    if (transportRecoveryTimerRef.current) clearTimeout(transportRecoveryTimerRef.current);
     if (callRef.current) {
       callRef.current.close();
     }
@@ -1802,8 +1927,8 @@ export default function CallPage() {
     rtcConnectionState,
     Boolean(remoteStream)
   );
-  const displayedCallConnectionIssue =
-    turnFallbackStatus === 'retrying' || turnFallbackStatus === 'waiting' ? null : callConnectionIssue;
+  const isRecoveringConnection = turnFallbackStatus !== 'idle' && turnFallbackStatus !== 'active';
+  const displayedCallConnectionIssue = isRecoveringConnection ? null : callConnectionIssue;
   const transportFailureHint = (() => {
     if (rtcIceState !== 'failed' || turnFallbackStatus !== 'idle') return '';
     if (!hasTurnConfig) {
@@ -1811,6 +1936,9 @@ export default function CallPage() {
     }
     if (turnMode === 'off') {
       return '当前已关闭初始 TURN 候选，直连失败；可移除 turn=0 或启用 TURN 后重试。';
+    }
+    if (turnMode === 'force') {
+      return '当前已强制 TURN 中继但连接仍失败，请检查临时凭据、TLS/UDP 监听和 relay 端口。';
     }
     return '已启用 TURN 候选但连接仍失败，请检查 TURN 地址、凭据、防火墙和 relay 端口，或使用 turn=force 排障。';
   })();
@@ -2010,6 +2138,8 @@ export default function CallPage() {
         visible={controlsVisible}
         isAudioEnabled={isAudioEnabled}
         isVideoEnabled={isVideoEnabled}
+        isAudioPending={isAudioPending}
+        isVideoPending={isVideoPending}
         isRemoteMuted={isRemoteMuted}
         isChatOpen={isChatOpen}
         isMobileMoreOpen={isMobileMoreOpen}
@@ -2017,8 +2147,8 @@ export default function CallPage() {
         streamAvailable={Boolean(stream)}
         currentQuality={currentQuality}
         videoFitMode={videoFitMode}
-        onToggleAudio={toggleAudio}
-        onToggleVideo={toggleVideo}
+        onToggleAudio={() => void toggleAudio(replacePlaceholderTrack)}
+        onToggleVideo={() => void toggleVideo(replacePlaceholderTrack)}
         onToggleRemoteAudio={() => setIsRemoteMuted((value) => !value)}
         onQualityChange={(quality) => void handleQualityChange(quality)}
         onVideoFitModeChange={setVideoFitMode}
@@ -2064,6 +2194,10 @@ export default function CallPage() {
           downlinkKbps: connectionDownlinkKbps,
           turnUsage,
         }}
+        controlTransport={controlTransport}
+        bulkTransport={bulkTransport}
+        credentialSource={turnCredentialSource}
+        credentialExpiresAt={turnCredentialExpiresAt}
         turnFallbackStatus={turnFallbackStatus}
         remotePlayError={remotePlayError}
       />

@@ -8,6 +8,8 @@ interface CallControlsProps {
   visible: boolean;
   isAudioEnabled: boolean;
   isVideoEnabled: boolean;
+  isAudioPending: boolean;
+  isVideoPending: boolean;
   isRemoteMuted: boolean;
   isChatOpen: boolean;
   isMobileMoreOpen: boolean;
@@ -39,6 +41,8 @@ export function CallControls({
   visible,
   isAudioEnabled,
   isVideoEnabled,
+  isAudioPending,
+  isVideoPending,
   isRemoteMuted,
   isChatOpen,
   isMobileMoreOpen,
@@ -94,7 +98,8 @@ export function CallControls({
           size="icon"
           className="h-14 w-14 rounded-full"
           onClick={onToggleAudio}
-          aria-label={isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
+          disabled={isAudioPending}
+          aria-label={isAudioPending ? '正在开启麦克风' : isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
           aria-pressed={isAudioEnabled}
         >
           {isAudioEnabled ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
@@ -116,7 +121,8 @@ export function CallControls({
           size="icon"
           className={cn('h-12 w-12 rounded-full', isVideoEnabled && 'bg-gray-700 hover:bg-gray-600')}
           onClick={onToggleVideo}
-          aria-label={isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
+          disabled={isVideoPending}
+          aria-label={isVideoPending ? '正在开启摄像头' : isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
           aria-pressed={isVideoEnabled}
         >
           {isVideoEnabled ? <Video className="h-5 w-5 text-white" /> : <VideoOff className="h-5 w-5 text-white" />}
@@ -169,7 +175,8 @@ export function CallControls({
           size="icon"
           className="h-12 w-12 rounded-full"
           onClick={onToggleAudio}
-          aria-label={isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
+          disabled={isAudioPending}
+          aria-label={isAudioPending ? '正在开启麦克风' : isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
           aria-pressed={isAudioEnabled}
         >
           {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
@@ -180,7 +187,8 @@ export function CallControls({
           size="icon"
           className={cn('h-12 w-12 rounded-full', isVideoEnabled && 'bg-gray-700 hover:bg-gray-600')}
           onClick={onToggleVideo}
-          aria-label={isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
+          disabled={isVideoPending}
+          aria-label={isVideoPending ? '正在开启摄像头' : isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
           aria-pressed={isVideoEnabled}
         >
           {isVideoEnabled ? <Video className="h-5 w-5 text-white" /> : <VideoOff className="h-5 w-5 text-white" />}

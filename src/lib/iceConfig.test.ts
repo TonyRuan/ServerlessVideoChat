@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildPeerRtcConfig, buildPeerRtcConfigForMode, hasConfiguredTurnServers, resolveTurnMode } from './iceConfig';
+import {
+  BASE_ICE_SERVERS,
+  buildPeerRtcConfig,
+  buildPeerRtcConfigForMode,
+  hasConfiguredTurnServers,
+  resolveTurnMode,
+} from './iceConfig';
 
 const envWithTurn = {
   VITE_TURN_URLS: 'turn:turn.example.com:3478?transport=udp, turn:turn.example.com:3478?transport=tcp',
@@ -8,6 +14,13 @@ const envWithTurn = {
 };
 
 describe('iceConfig', () => {
+  it('uses only two base STUN services to limit candidate gathering overhead', () => {
+    expect(BASE_ICE_SERVERS).toEqual([
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:stun.l.google.com:19302' },
+    ]);
+  });
+
   it('enables TURN by default when TURN credentials are configured', () => {
     const config = buildPeerRtcConfig(envWithTurn, '');
 

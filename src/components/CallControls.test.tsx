@@ -2,11 +2,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { CallControls } from './CallControls';
 
-const renderControls = (visible: boolean) => renderToStaticMarkup(
+const renderControls = (visible: boolean, pending = false) => renderToStaticMarkup(
   <CallControls
     visible={visible}
     isAudioEnabled
     isVideoEnabled={false}
+    isAudioPending={pending}
+    isVideoPending={pending}
     isRemoteMuted
     isChatOpen={false}
     isMobileMoreOpen={false}
@@ -46,5 +48,13 @@ describe('CallControls', () => {
 
     expect(html).toContain('aria-hidden="true"');
     expect(html).toContain('inert=""');
+  });
+
+  it('disables media controls while an on-demand device request is pending', () => {
+    const html = renderControls(true, true);
+
+    expect(html).toContain('aria-label="正在开启麦克风"');
+    expect(html).toContain('aria-label="正在开启摄像头"');
+    expect(html.match(/disabled=""/g)).toHaveLength(4);
   });
 });

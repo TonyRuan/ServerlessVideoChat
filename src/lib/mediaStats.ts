@@ -144,6 +144,10 @@ function extractTurnUsage(reports: StatsRecord[]): TurnUsage {
   };
 }
 
+export function extractTurnUsageFromStats(stats: StatsReportLike): TurnUsage {
+  return extractTurnUsage(collectReports(stats));
+}
+
 function selectedPairTransferSample(pair: StatsRecord | null): ConnectionTransferSample | null {
   if (!pair) return null;
 

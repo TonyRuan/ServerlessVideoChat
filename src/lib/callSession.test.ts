@@ -14,13 +14,37 @@ describe('callSession', () => {
       sessionId: 'session-1',
       role: 'host',
       peerId: 'peer_123',
+      mediaDefaults: {
+        audioEnabled: true,
+        videoEnabled: true,
+      },
+    });
+  });
+
+  it('parses disabled session media defaults from the URL hash', () => {
+    expect(parseCallSessionHash('#session=session-1&role=guest&audio=0&video=0')).toEqual({
+      sessionId: 'session-1',
+      role: 'guest',
+      mediaDefaults: {
+        audioEnabled: false,
+        videoEnabled: false,
+      },
     });
   });
 
   it('builds URL hash with optional peer id', () => {
-    expect(buildCallSessionHash({ sessionId: 'session-1', role: 'guest' })).toBe('#session=session-1&role=guest');
-    expect(buildCallSessionHash({ sessionId: 'session-1', role: 'host', peerId: 'peer-1' })).toBe(
-      '#session=session-1&role=host&peer=peer-1'
+    expect(buildCallSessionHash({
+      sessionId: 'session-1',
+      role: 'guest',
+      mediaDefaults: { audioEnabled: true, videoEnabled: true },
+    })).toBe('#session=session-1&role=guest');
+    expect(buildCallSessionHash({
+      sessionId: 'session-1',
+      role: 'host',
+      peerId: 'peer-1',
+      mediaDefaults: { audioEnabled: false, videoEnabled: false },
+    })).toBe(
+      '#session=session-1&role=host&peer=peer-1&audio=0&video=0'
     );
   });
 
@@ -28,6 +52,12 @@ describe('callSession', () => {
     expect(buildInviteLink('https://chat.example.com/', 'host-peer', 'session-1')).toBe(
       'https://chat.example.com/call/host-peer#session=session-1&role=guest'
     );
+    expect(buildInviteLink(
+      'https://chat.example.com/',
+      'host-peer',
+      'session-1',
+      { audioEnabled: true, videoEnabled: false }
+    )).toBe('https://chat.example.com/call/host-peer#session=session-1&role=guest&video=0');
   });
 
   it('rejects missing session or invalid peer ids', () => {
@@ -35,6 +65,10 @@ describe('callSession', () => {
     expect(parseCallSessionHash('#session=session-1&role=host&peer=http://bad')).toEqual({
       sessionId: 'session-1',
       role: 'host',
+      mediaDefaults: {
+        audioEnabled: true,
+        videoEnabled: true,
+      },
     });
   });
 
@@ -47,10 +81,14 @@ describe('callSession', () => {
       sessionId: 'session-1',
       role: 'guest' as const,
       peerId: 'host-peer',
+      mediaDefaults: {
+        audioEnabled: false,
+        videoEnabled: true,
+      },
     };
 
     expect(resolveCallSessionState(
-      '#session=session-1&role=guest',
+      '#session=session-1&role=guest&audio=0',
       current,
       'host-peer'
     )).toEqual(current);
@@ -61,10 +99,18 @@ describe('callSession', () => {
       expect(parseInviteInput('https://chat.example.com/call/host-peer#session=session-1&role=host')).toEqual({
         peerId: 'host-peer',
         sessionId: 'session-1',
+        mediaDefaults: {
+          audioEnabled: true,
+          videoEnabled: true,
+        },
       });
-      expect(parseInviteInput('http://localhost:5173/call/peer_123#session=session_2')).toEqual({
+      expect(parseInviteInput('http://localhost:5173/call/peer_123#session=session_2&audio=0&video=0')).toEqual({
         peerId: 'peer_123',
         sessionId: 'session_2',
+        mediaDefaults: {
+          audioEnabled: false,
+          videoEnabled: false,
+        },
       });
     });
 
@@ -76,6 +122,10 @@ describe('callSession', () => {
       ).toEqual({
         peerId: 'host-peer',
         sessionId: 'session-1',
+        mediaDefaults: {
+          audioEnabled: true,
+          videoEnabled: true,
+        },
       });
     });
 

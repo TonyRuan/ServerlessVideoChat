@@ -11,7 +11,12 @@ node_modules
 dist
 dist-ssr
 output
+.wrangler/
 *.local
+.dev.vars*
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*

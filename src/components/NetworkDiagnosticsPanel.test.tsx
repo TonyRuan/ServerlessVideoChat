@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { NetworkDiagnosticsPanel } from './NetworkDiagnosticsPanel';
+import { NetworkDiagnosticsPanel, TransportDiagnosticsDetails } from './NetworkDiagnosticsPanel';
 
 function renderPanel() {
   return renderToStaticMarkup(
@@ -26,6 +26,18 @@ function renderPanel() {
         downlinkKbps: 620,
         turnUsage: { isUsingTurn: true, localCandidateType: 'relay', remoteCandidateType: 'srflx' },
       }}
+      controlTransport={{
+        iceState: 'connected',
+        connectionState: 'connected',
+        turnUsage: { isUsingTurn: false, localCandidateType: 'host', remoteCandidateType: 'srflx' },
+      }}
+      bulkTransport={{
+        iceState: 'connected',
+        connectionState: 'connected',
+        turnUsage: { isUsingTurn: true, localCandidateType: 'relay', remoteCandidateType: 'srflx' },
+      }}
+      credentialSource="dynamic"
+      credentialExpiresAt={1_800_000_000_000}
       turnFallbackStatus="idle"
       remotePlayError=""
     />
@@ -41,5 +53,36 @@ describe('NetworkDiagnosticsPanel', () => {
     expect(markup).not.toContain('Codec:');
     expect(markup).not.toContain('Bytes:');
     expect(markup).not.toContain('网络环境诊断');
+  });
+
+  it('renders separate media, control, and bulk transport details without exposing credentials', () => {
+    const markup = renderToStaticMarkup(
+      <TransportDiagnosticsDetails
+        media={{
+          iceState: 'connected',
+          connectionState: 'connected',
+          turnUsage: { isUsingTurn: false, localCandidateType: 'host', remoteCandidateType: 'srflx' },
+        }}
+        control={{
+          iceState: 'connected',
+          connectionState: 'connected',
+          turnUsage: { isUsingTurn: true, localCandidateType: 'relay', remoteCandidateType: 'srflx' },
+        }}
+        bulk={{
+          iceState: 'checking',
+          connectionState: 'connecting',
+          turnUsage: { isUsingTurn: null, localCandidateType: null, remoteCandidateType: null },
+        }}
+        credentialSource="dynamic"
+        credentialExpiresAt={1_800_000_000_000}
+      />
+    );
+
+    expect(markup).toContain('媒体');
+    expect(markup).toContain('聊天控制');
+    expect(markup).toContain('文件通道');
+    expect(markup).toContain('动态短期凭据');
+    expect(markup).not.toContain('temporary-credential');
+    expect(markup).not.toContain('turn.example.com');
   });
 });

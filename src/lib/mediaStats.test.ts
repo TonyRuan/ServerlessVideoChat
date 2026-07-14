@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractConnectionTransferStats,
+  extractTurnUsageFromStats,
   extractOutboundVideoTransferStats,
   extractInboundVideoTransferStats,
   formatConnectionBitrate,
@@ -141,8 +142,7 @@ describe('mediaStats', () => {
   });
 
   it('detects TURN usage from the selected candidate pair', () => {
-    const result = extractConnectionTransferStats(
-      statsReport([
+    const stats = statsReport([
         { id: 'transport-1', type: 'transport', selectedCandidatePairId: 'pair-1' },
         {
           id: 'pair-1',
@@ -153,7 +153,9 @@ describe('mediaStats', () => {
         },
         { id: 'local-1', type: 'local-candidate', candidateType: 'relay' },
         { id: 'remote-1', type: 'remote-candidate', candidateType: 'srflx' },
-      ]),
+      ]);
+    const result = extractConnectionTransferStats(
+      stats,
       null
     );
 
@@ -163,6 +165,7 @@ describe('mediaStats', () => {
       remoteCandidateType: 'srflx',
     });
     expect(formatTurnUsage(result.metrics.turnUsage)).toBe('使用中');
+    expect(extractTurnUsageFromStats(stats)).toEqual(result.metrics.turnUsage);
   });
 
   it('does not report TURN usage for unselected relay candidates', () => {

@@ -5,16 +5,12 @@ export interface IceConfigEnvironment {
   VITE_TURN_USERNAME?: string;
   VITE_TURN_CREDENTIAL?: string;
   VITE_TURN_MODE?: string;
+  VITE_TURN_CREDENTIALS_URL?: string;
 }
 
 export const BASE_ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
 ];
 
 function parseTurnMode(value: string | null | undefined): TurnMode | null {

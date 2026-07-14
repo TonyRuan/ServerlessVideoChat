@@ -1,14 +1,26 @@
 export type CallSessionRole = 'host' | 'guest';
 
+export interface CallMediaDefaults {
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+}
+
+export const DEFAULT_CALL_MEDIA_DEFAULTS: Readonly<CallMediaDefaults> = {
+  audioEnabled: true,
+  videoEnabled: true,
+};
+
 export interface CallSessionState {
   sessionId: string;
   role: CallSessionRole;
   peerId?: string;
+  mediaDefaults: CallMediaDefaults;
 }
 
 export interface ParsedInviteInput {
   peerId: string;
   sessionId: string;
+  mediaDefaults: CallMediaDefaults;
 }
 
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
@@ -43,6 +55,13 @@ function normalizeRole(value: string | null): CallSessionRole {
   return value === 'guest' ? 'guest' : 'host';
 }
 
+function parseMediaDefaults(params: URLSearchParams): CallMediaDefaults {
+  return {
+    audioEnabled: params.get('audio') !== '0',
+    videoEnabled: params.get('video') !== '0',
+  };
+}
+
 export function parseCallSessionHash(hash: string): CallSessionState | null {
   const params = new URLSearchParams(hash.replace(/^#/, ''));
   const sessionId = params.get('session') ?? '';
@@ -53,6 +72,7 @@ export function parseCallSessionHash(hash: string): CallSessionState | null {
     sessionId,
     role: normalizeRole(params.get('role')),
     ...(peerId && isValidPeerId(peerId) ? { peerId } : {}),
+    mediaDefaults: parseMediaDefaults(params),
   };
 }
 
@@ -68,6 +88,7 @@ export function resolveCallSessionState(
     sessionId: parsed.sessionId,
     role: parsed.role,
     ...(peerId ? { peerId } : {}),
+    mediaDefaults: parsed.mediaDefaults,
   };
 }
 
@@ -102,18 +123,30 @@ export function parseInviteInput(input: string): ParsedInviteInput | null {
   return {
     peerId,
     sessionId: session.sessionId,
+    mediaDefaults: session.mediaDefaults,
   };
 }
 
-export function buildCallSessionHash({ sessionId, role, peerId }: CallSessionState) {
+export function buildCallSessionHash({ sessionId, role, peerId, mediaDefaults }: CallSessionState) {
   const params = new URLSearchParams();
   params.set('session', sessionId);
   params.set('role', role);
   if (peerId) params.set('peer', peerId);
+  if (!mediaDefaults.audioEnabled) params.set('audio', '0');
+  if (!mediaDefaults.videoEnabled) params.set('video', '0');
   return `#${params.toString()}`;
 }
 
-export function buildInviteLink(baseUrl: string, hostPeerId: string, sessionId: string) {
+export function buildInviteLink(
+  baseUrl: string,
+  hostPeerId: string,
+  sessionId: string,
+  mediaDefaults: CallMediaDefaults = { ...DEFAULT_CALL_MEDIA_DEFAULTS }
+) {
   const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-  return `${cleanBaseUrl}/call/${hostPeerId}${buildCallSessionHash({ sessionId, role: 'guest' })}`;
+  return `${cleanBaseUrl}/call/${hostPeerId}${buildCallSessionHash({
+    sessionId,
+    role: 'guest',
+    mediaDefaults,
+  })}`;
 }

@@ -17,7 +17,7 @@ Read these before changing code, running builds, or deploying:
 
 ## Project Snapshot
 
-ServerlessVideoChat is a frontend-only P2P video chat app built with React 18, TypeScript, Vite, PeerJS, WebRTC, Tailwind CSS, Zustand, and React Router.
+ServerlessVideoChat is a P2P video chat app built with React 18, TypeScript, Vite, PeerJS, WebRTC, Tailwind CSS, Zustand, and React Router. Cloudflare Pages serves the static SPA and an optional same-origin Function issues short-lived TURN credentials; media never passes through the Function.
 
 Primary routes:
 
@@ -33,12 +33,15 @@ Primary routes:
 - `src/hooks/useMediaStream.ts`: local camera/mic stream acquisition and quality switching.
 - `src/lib/callSession.ts`: session hash parsing and invite link construction.
 - `src/lib/iceConfig.ts`: STUN/TURN server configuration and TURN mode parsing.
+- `src/lib/turnCredentials.ts`: dynamic TURN credential validation, refresh, and static fallback.
+- `src/lib/connectionRecovery.ts`: reconnect timing, watchdog deadlines, and TURN escalation policy.
 - `src/lib/turnFallback.ts`: direct-connection failure fallback decisions.
 - `src/lib/mediaStats.ts`: WebRTC stats, codec, bitrate, and TURN usage extraction.
 - `src/lib/networkDiagnostics.ts`: ICE candidate diagnostic probe.
 - `src/components/NetworkDiagnosticsPanel.tsx`: compact/expanded connection diagnostics UI.
 - `src/components/InviteLinkCard.tsx`: invite link, copy button, and QR code.
 - `public/_redirects`: Cloudflare Pages SPA fallback.
+- `functions/api/turn-credentials.ts`: same-origin short-lived coturn REST credential endpoint.
 - `public/404.html`: GitHub Pages SPA fallback.
 
 ## Commands
@@ -60,6 +63,7 @@ Before claiming a code change is ready, run:
 
 ```powershell
 npm test
+npm run check
 npm run lint
 npm run build
 ```
@@ -68,7 +72,7 @@ npm run build
 
 ## Critical Behavior Notes
 
-- TURN defaults to `on` when TURN config is present; details and overrides are in `docs/maintenance/webrtc.md`.
+- TURN defaults to `on`; dynamic short-lived credentials are preferred and complete static `VITE_TURN_*` values are migration/local fallback. Details are in `docs/maintenance/webrtc.md`.
 - Cloudflare Pages is the preferred deploy target and uses root-path hosting; GitHub Pages uses `/ServerlessVideoChat/`.
 - `.env.local` is intentionally ignored. Variable names and loading patterns are documented in `docs/maintenance/environment.md`.
 

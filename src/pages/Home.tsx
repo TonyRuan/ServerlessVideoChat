@@ -11,15 +11,23 @@ import logoUrl from '../assets/serverless-video-chat-logo.png';
 
 export default function Home() {
   const navigate = useNavigate();
-  const { stream, error, isAudioEnabled, isVideoEnabled, initializeStream, toggleAudio, toggleVideo, currentQuality, changeQuality } = useMediaStream();
+  const {
+    stream,
+    error,
+    isAudioEnabled,
+    isVideoEnabled,
+    isAudioPending,
+    isVideoPending,
+    initializeStream,
+    toggleAudio,
+    toggleVideo,
+    currentQuality,
+    changeQuality,
+  } = useMediaStream();
   const [meetingId, setMeetingId] = useState('');
   const [joinError, setJoinError] = useState('');
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
   const videoRef = React.useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    initializeStream();
-  }, [initializeStream]);
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -28,7 +36,21 @@ export default function Home() {
   }, [stream]);
 
   const handleCreateMeeting = () => {
-    navigate(`/call${buildCallSessionHash({ sessionId: createCallSessionId(), role: 'host' })}`);
+    navigate(`/call${buildCallSessionHash({
+      sessionId: createCallSessionId(),
+      role: 'host',
+      mediaDefaults: {
+        audioEnabled: isAudioEnabled,
+        videoEnabled: isVideoEnabled,
+      },
+    })}`);
+  };
+
+  const handleStartPreview = () => {
+    void initializeStream(currentQuality, {
+      audioEnabled: isAudioEnabled,
+      videoEnabled: isVideoEnabled,
+    });
   };
 
   const handleJoinMeeting = (e: React.FormEvent) => {
@@ -43,6 +65,7 @@ export default function Home() {
     navigate(`/call/${invite.peerId}${buildCallSessionHash({
       sessionId: invite.sessionId,
       role: 'guest',
+      mediaDefaults: invite.mediaDefaults,
     })}`);
   };
 
@@ -65,11 +88,19 @@ export default function Home() {
         <div className="relative aspect-video bg-gray-800 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-gray-700">
           {error ? (
             <div className="absolute inset-0 flex items-center justify-center text-red-400 p-4 text-center">
-              <p>摄像头访问被拒绝。请启用权限以继续。</p>
+              <div className="space-y-3">
+                <p>无法访问所选音视频设备。</p>
+                <Button type="button" variant="secondary" onClick={handleStartPreview}>
+                  重试预览
+                </Button>
+              </div>
             </div>
           ) : !stream ? (
-            <div className="absolute inset-0 flex items-center justify-center text-gray-500">
-              <p>初始化摄像头...</p>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Button type="button" variant="secondary" onClick={handleStartPreview}>
+                <Video className="mr-2 h-4 w-4" />
+                启动设备预览
+              </Button>
             </div>
           ) : (
             <video
@@ -95,8 +126,8 @@ export default function Home() {
               variant={isAudioEnabled ? 'secondary' : 'danger'}
               size="icon"
               className="rounded-full h-12 w-12"
-              onClick={toggleAudio}
-              disabled={!stream}
+              onClick={() => void toggleAudio()}
+              disabled={isAudioPending}
               aria-label={isAudioEnabled ? '关闭麦克风' : '开启麦克风'}
               aria-pressed={isAudioEnabled}
             >
@@ -106,8 +137,8 @@ export default function Home() {
               variant={isVideoEnabled ? 'secondary' : 'danger'}
               size="icon"
               className="rounded-full h-12 w-12"
-              onClick={toggleVideo}
-              disabled={!stream}
+              onClick={() => void toggleVideo()}
+              disabled={isVideoPending}
               aria-label={isVideoEnabled ? '关闭摄像头' : '开启摄像头'}
               aria-pressed={isVideoEnabled}
             >
@@ -128,7 +159,6 @@ export default function Home() {
           <Button 
             className="w-full h-12 text-lg" 
             onClick={handleCreateMeeting}
-            disabled={!stream && !error}
           >
             <Video className="mr-2 h-5 w-5" />
             新建会议
@@ -159,7 +189,7 @@ export default function Home() {
               type="submit" 
               variant="secondary" 
               className="h-12 shrink-0 whitespace-nowrap px-6"
-              disabled={!meetingId.trim() || (!stream && !error)}
+              disabled={!meetingId.trim()}
             >
               加入
             </Button>

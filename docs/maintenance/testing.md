@@ -17,6 +17,10 @@ Useful targeted commands:
 
 ```powershell
 npm test -- src/lib/iceConfig.test.ts
+npm test -- src/lib/turnCredentials.test.ts
+npm test -- functions/api/turn-credentials.test.ts
+npm test -- src/lib/connectionRecovery.test.ts
+npm test -- src/lib/transportWatchdog.test.ts
 npm test -- src/lib/turnFallback.test.ts
 npm test -- src/lib/mediaStats.test.ts
 npm test -- src/lib/networkDiagnostics.test.ts
@@ -41,7 +45,7 @@ For display-only component behavior, use:
 import { renderToStaticMarkup } from 'react-dom/server';
 ```
 
-For protocol, session, file-transfer flow, TURN, and stats helpers, test pure functions directly. Protocol tests should cover malformed, oversized, non-finite, stale, and wrong-peer payloads in addition to happy paths.
+For protocol, session, file-transfer flow, TURN, recovery, and stats helpers, test pure functions directly. Protocol tests should cover malformed, oversized, non-finite, stale, and wrong-peer payloads in addition to happy paths. Credential tests must verify expiry units, no-store behavior, malformed URL rejection, bounded TTL, and failure fallback without printing generated credential values.
 
 ## Browser Validation Notes
 
@@ -52,7 +56,9 @@ If browser validation reaches the `Permission denied` error page, the call UI di
 Common surfaces to validate when relevant:
 
 - Waiting state invite link and QR code: host opens `/call`, PeerJS becomes ready, and `myId` exists.
-- Compact diagnostics: collapsed panel shows only connection status; expanded panel shows full debug details.
+- Compact diagnostics: collapsed panel shows only connection status; expanded panel distinguishes media, chat control, and file transports plus credential source/expiry.
+- Recovery: use fake media devices and two isolated browser contexts; verify the guest is the only replacement initiator and stale watchdog timers do not close a newer connection.
+- TURN: verify normal `on` mode separately from `turn=force`; an enabled TURN status is not proof of relay, so confirm the selected candidate type in stats.
 - Bottom controls: fixed overlay should not cover waiting-state content on small screens.
 - Hidden desktop/mobile control variants must be inert and excluded from the accessibility tree.
 - Join flow must reject bare Peer IDs and accept a complete valid invite URL.

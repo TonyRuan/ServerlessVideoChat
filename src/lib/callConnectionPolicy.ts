@@ -1,5 +1,6 @@
 import type { CallSessionRole } from './callSession';
 import type { CallRole } from './turnFallback';
+import { reconnectDelayMs } from './connectionRecovery';
 
 export type DataConnectionChannel = 'control' | 'bulk';
 
@@ -21,6 +22,16 @@ export function shouldInitiateOutgoingConnection({
   remotePeerId?: string;
 }) {
   return role === 'guest' && Boolean(remotePeerId);
+}
+
+export function shouldInitializeHostWaiting({
+  role,
+  hasActiveMediaConnection,
+}: {
+  role: CallSessionRole;
+  hasActiveMediaConnection: boolean;
+}) {
+  return role === 'host' && !hasActiveMediaConnection;
 }
 
 export function isIncomingConnectionMetadataValid({
@@ -98,7 +109,7 @@ export function shouldReplaceCurrentDataConnection({
   return hasCurrentConnection && !isCurrentOpen;
 }
 
-export function dataReconnectDelayMs(attempt: number, maxAttempts = 3) {
+export function dataReconnectDelayMs(attempt: number, maxAttempts = 6) {
   if (attempt >= maxAttempts) return null;
-  return 500 * 2 ** attempt;
+  return reconnectDelayMs(attempt, () => 0.5);
 }

@@ -1,6 +1,6 @@
 # Project Overview
 
-`ServerlessVideoChat` is a static SPA for peer-to-peer video chat. It has no custom media backend: PeerJS provides signaling, and browser WebRTC carries audio, video, data-channel messages, reactions, diagnostics, and reconnect/session metadata.
+`ServerlessVideoChat` is a static SPA for peer-to-peer video chat with one same-origin Cloudflare Pages Function for short-lived TURN credentials. It has no custom media backend: PeerJS provides signaling, and browser WebRTC carries audio, video, data-channel messages, reactions, diagnostics, and reconnect/session metadata. The Function never receives media or chat content.
 
 ## Stack
 
@@ -13,45 +13,57 @@
 
 ## Routes And Session Shape
 
-- `/`: home page with local preview, create meeting, and join meeting.
+- `/`: home page with optional local preview, create meeting, and join meeting.
 - `/call#session=<id>&role=host`: host waiting page.
 - `/call/:remotePeerId#session=<id>&role=guest`: guest joins a specific Peer ID.
 
 Session state lives in the URL hash. Do not move meeting recovery state to long-term browser storage without an explicit privacy/product decision.
 
+The creator's camera and microphone state is also part of the session contract. Disabled defaults are encoded as `audio=0` and `video=0`; omitted values remain enabled for old-link compatibility. Voice-only and text-only direct invites therefore start guests with the same disabled devices as the host.
+
 The home page accepts only a complete HTTP/HTTPS invite URL whose route, peer ID, session ID, and guest role are valid. Bare Peer IDs are rejected so a join attempt cannot silently invent an unrelated session.
+
+Home does not request camera or microphone permission on page load. Its media buttons set the future meeting defaults before a stream exists; the explicit preview command requests only the currently enabled devices. This keeps pasted voice-only and text-only invite flows from prompting for devices before their invite defaults are known.
 
 ## User-Facing Capabilities
 
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.
+- Session-level initial media defaults for video, voice-only, and text-only meetings; disabled hardware is requested only when a participant later enables it.
 - Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. File transfer uses receiver-issued credit, reconnect resume, and a receiver completion acknowledgement; capable browsers save directly to disk, otherwise completed files become download cards. Chat is not persisted to local storage.
 - Double-click heart reactions.
 - Compact diagnostics panel with expandable full debug details.
 - Invite link with QR code for phone join flow.
-- TURN-enabled connection by default when TURN config is present, with URL/environment overrides.
+- TURN candidates enabled by default, preferring short-lived same-origin credentials with complete static credentials as migration/local fallback.
+- Bounded automatic recovery for media, chat control, and bulk file transports, with relay-only escalation after repeated media establishment failure.
 
 ## Important Modules
 
 - `src/pages/CallPage.tsx`: central call page coordinator. It is intentionally risky to change broadly; prefer focused edits or extract small components/hooks when a task requires it.
 - `src/hooks/usePeer.ts`: PeerJS lifecycle, media calls, data connections, RTC config, and SDP transform.
 - `src/hooks/useMediaStream.ts`: camera/microphone acquisition and quality changes.
+- `src/lib/mediaDevicePolicy.ts`: selective device constraints and hardware-free placeholder tracks for initially disabled media.
 - `src/hooks/useAutoHideControls.ts`: call-control visibility and activity timeout behavior.
 - `src/lib/callSession.ts`: session parsing, link creation, hash updates.
 - `src/lib/fileTransferBinary.ts`: binary file frame encoding and validation.
 - `src/lib/fileTransferFlow.ts`: receiver credit, sender window, ACK, and resume helpers.
 - `src/lib/realtimeProtocol.ts`: strict validation for quality and reaction payloads.
 - `src/lib/iceConfig.ts`: ICE server and TURN mode generation.
-- `src/lib/turnFallback.ts`: fallback action derivation.
+- `src/lib/turnCredentials.ts`: dynamic credential validation, refresh timing, and static fallback resolution.
+- `src/lib/connectionRecovery.ts`: transport deadlines, reconnect backoff, and TURN mode escalation.
+- `src/lib/transportWatchdog.ts`: cancellable data-transport watchdog wiring.
+- `src/lib/turnFallback.ts`: user-facing recovery status labels.
 - `src/lib/mediaStats.ts`: stats parsing for codec, bitrate, bandwidth, and TURN usage.
 - `src/components/NetworkDiagnosticsPanel.tsx`: collapsed/expanded diagnostics panel.
 - `src/components/InviteLinkCard.tsx`: invite link, copy action, QR code.
 - `src/components/CallControls.tsx`: desktop/mobile call controls and accessible control state.
+- `functions/api/turn-credentials.ts`: same-origin coturn REST credential issuer for Cloudflare Pages.
 
 ## Known Risks
 
 - `CallPage.tsx` has broad responsibilities. Avoid unrelated refactors inside it.
-- TURN credentials injected through `VITE_*` are visible in frontend build output and are not server-side secrets.
+- Static TURN credentials injected through `VITE_*` remain visible in frontend build output and are only a fallback. Production should use the Pages Function and remove static credentials after coturn migration is verified.
+- Dynamic TURN issuance depends on Cloudflare Pages bindings and matching coturn shared-secret configuration; migrate both sides in one controlled window.
 - WebRTC connection success still depends on browser, network, NAT, firewall, TURN reachability, and media permission.
 - Chat contents and drafts are memory-only by design; refresh or close clears them.
 - Invite URLs are bearer capabilities and do not independently verify the other participant's identity.

@@ -16,6 +16,13 @@ import {
 import { turnFallbackStatusLabel, type TurnFallbackStatus } from '../lib/turnFallback';
 import { BUILD_INFO } from '../lib/buildInfo';
 import { cn } from '../lib/utils';
+import type { TurnCredentialSource } from '../hooks/usePeer';
+
+export interface TransportDiagnosticSnapshot {
+  iceState: string;
+  connectionState: string;
+  turnUsage: TurnUsage;
+}
 
 interface NetworkDiagnosticsPanelProps {
   effectiveConnectionStatus: CallConnectionStatus;
@@ -47,8 +54,53 @@ interface NetworkDiagnosticsPanelProps {
     downlinkKbps: number | null;
     turnUsage: TurnUsage;
   };
+  controlTransport: TransportDiagnosticSnapshot;
+  bulkTransport: TransportDiagnosticSnapshot;
+  credentialSource: TurnCredentialSource;
+  credentialExpiresAt: number | null;
   turnFallbackStatus: TurnFallbackStatus;
   remotePlayError: string;
+}
+
+function credentialSourceLabel(source: TurnCredentialSource) {
+  if (source === 'dynamic') return '动态短期凭据';
+  if (source === 'static') return '静态凭据';
+  if (source === 'loading') return '正在加载';
+  return '不可用';
+}
+
+function transportStateLabel(snapshot: TransportDiagnosticSnapshot) {
+  return `ICE ${snapshot.iceState || '-'} / PC ${snapshot.connectionState || '-'} / TURN ${formatTurnUsage(snapshot.turnUsage)}`;
+}
+
+export function TransportDiagnosticsDetails({
+  media,
+  control,
+  bulk,
+  credentialSource,
+  credentialExpiresAt,
+}: {
+  media: TransportDiagnosticSnapshot;
+  control: TransportDiagnosticSnapshot;
+  bulk: TransportDiagnosticSnapshot;
+  credentialSource: TurnCredentialSource;
+  credentialExpiresAt: number | null;
+}) {
+  const expiry = credentialExpiresAt
+    ? new Date(credentialExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '-';
+
+  return (
+    <div className="mt-1 space-y-1 text-[11px] text-gray-400">
+      <div>媒体: {transportStateLabel(media)}</div>
+      <div>聊天控制: {transportStateLabel(control)}</div>
+      <div>文件通道: {transportStateLabel(bulk)}</div>
+      <div>
+        TURN 凭据: {credentialSourceLabel(credentialSource)}
+        {credentialSource === 'dynamic' ? ` / 有效至 ${expiry}` : ''}
+      </div>
+    </div>
+  );
 }
 
 function statusLabel(status: CallConnectionStatus) {
@@ -90,6 +142,10 @@ export function NetworkDiagnosticsPanel({
   inbound,
   outbound,
   connection,
+  controlTransport,
+  bulkTransport,
+  credentialSource,
+  credentialExpiresAt,
   turnFallbackStatus,
   remotePlayError,
 }: NetworkDiagnosticsPanelProps) {
@@ -166,9 +222,17 @@ export function NetworkDiagnosticsPanel({
           <div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
             {BUILD_INFO.label}
           </div>
-          <div className="mt-1 text-[11px] text-gray-400">
-            ICE: {rtcIceState || '-'} / PC: {rtcConnectionState || '-'}
-          </div>
+          <TransportDiagnosticsDetails
+            media={{
+              iceState: rtcIceState,
+              connectionState: rtcConnectionState,
+              turnUsage: connection.turnUsage,
+            }}
+            control={controlTransport}
+            bulk={bulkTransport}
+            credentialSource={credentialSource}
+            credentialExpiresAt={credentialExpiresAt}
+          />
           <div className="mt-1 text-[11px] text-gray-400">
             V: {remoteTrackCounts.video} / A: {remoteTrackCounts.audio} · Size: {remoteVideo.width}x
             {remoteVideo.height} · RS: {remoteVideo.readyState} · {remoteVideo.paused ? 'paused' : 'playing'}

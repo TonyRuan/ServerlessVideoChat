@@ -7,6 +7,7 @@ import {
   isPayloadPeerValid,
   isSessionResumePeerValid,
   shouldInitiateOutgoingConnection,
+  shouldInitializeHostWaiting,
   shouldReplaceCurrentMediaConnection,
   shouldReplaceCurrentDataConnection,
   turnFallbackRoleForSessionRole,
@@ -22,6 +23,12 @@ describe('callConnectionPolicy', () => {
     expect(shouldInitiateOutgoingConnection({ role: 'guest', remotePeerId: 'host-peer' })).toBe(true);
     expect(shouldInitiateOutgoingConnection({ role: 'host', remotePeerId: 'guest-peer' })).toBe(false);
     expect(shouldInitiateOutgoingConnection({ role: 'guest', remotePeerId: undefined })).toBe(false);
+  });
+
+  it('initializes host waiting state only when no media connection is active', () => {
+    expect(shouldInitializeHostWaiting({ role: 'host', hasActiveMediaConnection: false })).toBe(true);
+    expect(shouldInitializeHostWaiting({ role: 'host', hasActiveMediaConnection: true })).toBe(false);
+    expect(shouldInitializeHostWaiting({ role: 'guest', hasActiveMediaConnection: false })).toBe(false);
   });
 
   it('accepts only opposite-role metadata bound to the active session and transport peer', () => {
@@ -125,6 +132,9 @@ describe('callConnectionPolicy', () => {
     expect(dataReconnectDelayMs(0)).toBe(500);
     expect(dataReconnectDelayMs(1)).toBe(1000);
     expect(dataReconnectDelayMs(2)).toBe(2000);
-    expect(dataReconnectDelayMs(3)).toBeNull();
+    expect(dataReconnectDelayMs(3)).toBe(4000);
+    expect(dataReconnectDelayMs(4)).toBe(8000);
+    expect(dataReconnectDelayMs(5)).toBe(15000);
+    expect(dataReconnectDelayMs(6)).toBeNull();
   });
 });
