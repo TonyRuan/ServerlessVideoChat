@@ -31,7 +31,7 @@ Home does not request camera or microphone permission on page load. Its media bu
 - Local media controls, quality switching, and video fit mode.
 - Session-level initial media defaults for video, voice-only, and text-only meetings; disabled hardware is requested only when a participant later enables it.
 - Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. File transfer uses receiver-issued credit, reconnect resume, and a receiver completion acknowledgement; capable browsers save directly to disk, otherwise completed files become download cards. Chat is not persisted to local storage.
-- Double-click heart reactions.
+- Double-click dog emoji reactions.
 - Compact diagnostics panel with expandable full debug details.
 - Invite link with QR code for phone join flow.
 - TURN candidates enabled by default, preferring short-lived same-origin credentials with complete static credentials as migration/local fallback.

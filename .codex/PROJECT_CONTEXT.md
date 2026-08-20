@@ -5,7 +5,7 @@
 
 ## What This Project Is
 
-`ServerlessVideoChat` is a static SPA for P2P video chat plus a same-origin Cloudflare Pages Function that issues short-lived TURN credentials. PeerJS handles signaling. Browser WebRTC carries audio, video, encrypted chat payloads, heart reactions, quality changes, diagnostics, and reconnect/session metadata; the Function never receives media or chat content.
+`ServerlessVideoChat` is a static SPA for P2P video chat plus a same-origin Cloudflare Pages Function that issues short-lived TURN credentials. PeerJS handles signaling. Browser WebRTC carries audio, video, encrypted chat payloads, dog emoji reactions, quality changes, diagnostics, and reconnect/session metadata; the Function never receives media or chat content.
 
 Primary stack:
 

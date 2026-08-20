@@ -23,8 +23,8 @@
   - SDP 协商优先级为 `AV1 > VP9 > H265 > 其他`。
   - 页面左上角会显示当前协商到的视频 codec 和上下行带宽估算。
 - **互动体验**：
-  - 屏幕连点触发漂浮爱心动画。
-  - 通过 WebRTC DataChannel 实现爱心动画跨端实时同步。
+  - 屏幕连点触发漂浮 🐶 emoji 动画。
+  - 通过 WebRTC DataChannel 实现 🐶 emoji 动画跨端实时同步。
 - **现代化 UI**：基于 Tailwind CSS 和 Lucide-React，响应式设计，完美适配移动端和桌面端。
 
 ## 🛠 技术栈
@@ -43,7 +43,7 @@ src/
 │   ├── Button.tsx        # 基础 UI 组件
 │   ├── CallControls.tsx  # 桌面/移动通话控制条和无障碍隐藏状态
 │   ├── ChatPanel.tsx     # 图文聊天、文件接收、图片预览、焦点管理和加密状态
-│   ├── ClickHeart.tsx    # 连点爱心动画组件（带防误触、Zustand 状态分发）
+│   ├── ClickHeart.tsx    # 连点 🐶 emoji 动画组件（带防误触、Zustand 状态分发）
 │   ├── NetworkDiagnosticsPanel.tsx # WebRTC 状态、带宽、TURN 和网络环境诊断
 │   └── SettingsMenu.tsx  # 画质和画面自适应设置菜单
 ├── hooks/

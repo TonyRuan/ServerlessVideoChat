@@ -113,7 +113,7 @@ const ClickHeart = () => {
             '--tx': `${heart.tx}px`,
           } as HeartStyle}
         >
-          ❤
+          🐶
         </span>
       ))}
     </div>
