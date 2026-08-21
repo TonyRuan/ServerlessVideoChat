@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { Download, File as FileIcon, LockKeyhole, Paperclip, Send, X } from 'lucide-react';
 import { Button } from './Button';
 import { cn } from '../lib/utils';
@@ -131,10 +132,14 @@ const getFileTransferLabel = (message: ChatMessage) => {
   const percent = Math.min(100, Math.round((transfer.bytesTransferred / total) * 100));
 
   if (transfer.status === 'waiting') return '等待对方接受';
-  if (transfer.status === 'offered') return `等待你确认接收；不支持直接保存时最多 ${getMemoryFileFallbackLimitLabel()}`;
+  if (transfer.status === 'offered') return Capacitor.isNativePlatform()
+    ? '等待你确认接收；接受后保存到 Documents/SVC'
+    : `等待你确认接收；不支持直接保存时最多 ${getMemoryFileFallbackLimitLabel()}`;
   if (transfer.status === 'transferring') return `传输中 ${percent}%`;
   if (transfer.status === 'ready') return '已接收，可下载';
-  if (transfer.status === 'saved') return '已保存到磁盘';
+  if (transfer.status === 'saved') return transfer.savedPath
+    ? `已保存到 ${transfer.savedPath}`
+    : '已保存到磁盘';
   if (transfer.status === 'sent') return '已发送';
   if (transfer.status === 'rejected') return '已拒绝';
   if (transfer.status === 'failed') return transfer.error || '传输失败';

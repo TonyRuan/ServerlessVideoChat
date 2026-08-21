@@ -131,6 +131,7 @@ import {
   savePairedDevice,
   updatePairedDeviceRemote,
 } from '../lib/devicePairing';
+import { createNativeReceivedFileWritable } from '../lib/nativeFileSave';
 
 const FILE_TRANSFER_BUFFER_POLL_MS = 20;
 const EMPTY_TRANSPORT_DIAGNOSTIC: TransportDiagnosticSnapshot = {
@@ -158,6 +159,7 @@ interface IncomingFileTransferState {
   lastProgressUpdateAt: number;
   lastProgressUpdateBytes: number;
   saveMode: WireChatFileSaveMode;
+  savedPath?: string;
   chunks?: Uint8Array[];
   writable?: FileSystemWritableFileStreamLike;
 }
@@ -640,6 +642,7 @@ export default function CallPage() {
         updateFileTransfer(payload.transferId, {
           status: 'saved',
           bytesTransferred: transfer.bytesReceived,
+          savedPath: transfer.savedPath,
         });
       } else {
         const blob = new Blob(transfer.chunks ?? [], { type: transfer.offer.message.file.mimeType });
@@ -1945,15 +1948,23 @@ export default function CallPage() {
 
     let writable: FileSystemWritableFileStreamLike | undefined;
     let saveMode: WireChatFileSaveMode = 'memory';
+    let savedPath: string | undefined;
 
     try {
-      const picker = (window as WindowWithSaveFilePicker).showSaveFilePicker;
-      if (picker) {
-        const handle = await picker({ suggestedName: message.file.name });
-        writable = await handle.createWritable();
+      if (Capacitor.isNativePlatform()) {
+        const nativeFile = await createNativeReceivedFileWritable(message.file.name);
+        writable = nativeFile.writable;
+        savedPath = nativeFile.displayPath;
         saveMode = 'file-system';
-      } else if (!canUseMemoryFileFallback(message.file.size)) {
-        throw new Error(`当前浏览器不支持直接保存到磁盘，超过 ${getMemoryFileFallbackLimitLabel()} 的文件无法接收`);
+      } else {
+        const picker = (window as WindowWithSaveFilePicker).showSaveFilePicker;
+        if (picker) {
+          const handle = await picker({ suggestedName: message.file.name });
+          writable = await handle.createWritable();
+          saveMode = 'file-system';
+        } else if (!canUseMemoryFileFallback(message.file.size)) {
+          throw new Error(`当前浏览器不支持直接保存到磁盘，超过 ${getMemoryFileFallbackLimitLabel()} 的文件无法接收`);
+        }
       }
 
       const session = await ensureChatCryptoSession(conn);
@@ -1967,6 +1978,7 @@ export default function CallPage() {
         lastProgressUpdateAt: Date.now(),
         lastProgressUpdateBytes: 0,
         saveMode,
+        savedPath,
         writable,
         chunks: writable ? undefined : [],
       });

@@ -44,6 +44,7 @@ export interface ChatFileTransfer {
   bytesPerSecond?: number;
   error?: string;
   saveMode?: 'file-system' | 'memory';
+  savedPath?: string;
 }
 
 export interface ChatMessage {
