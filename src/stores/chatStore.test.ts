@@ -6,6 +6,7 @@ const resetChatStore = () => {
   useChatStore.setState({
     conversationId: null,
     peerId: null,
+    isPersistent: false,
     messages: [],
     draftText: '',
     isPanelOpen: false,
@@ -48,6 +49,32 @@ describe('chatStore', () => {
     expect(useChatStore.getState().peerId).toBe('remote-peer-2');
     expect(useChatStore.getState().messages).toEqual([]);
     expect(useChatStore.getState().draftText).toBe('');
+  });
+
+  it('hydrates and persists opted-in device conversations', () => {
+    const entries = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: {
+        getItem: (key: string) => entries.get(key) ?? null,
+        setItem: (key: string, value: string) => entries.set(key, value),
+        removeItem: (key: string) => entries.delete(key),
+      } as unknown as Storage,
+      configurable: true,
+    });
+    const { setConversationPeers, createLocalMessage, setDraftText } = useChatStore.getState();
+
+    setConversationPeers('svc-local', 'svc-remote', 'device-session', true);
+    createLocalMessage({ myPeerId: 'svc-local', id: 'queued-1', text: '稍后发送' });
+    setDraftText('未完成草稿');
+
+    resetChatStore();
+    useChatStore.getState().setConversationPeers('svc-local', 'svc-remote', 'device-session', true);
+
+    expect(useChatStore.getState()).toMatchObject({
+      isPersistent: true,
+      draftText: '未完成草稿',
+      messages: [{ id: 'queued-1', text: '稍后发送', status: 'sending' }],
+    });
   });
 
   it('creates local downloadable file messages in memory', () => {
@@ -358,7 +385,7 @@ describe('chatStore', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:evicted-download');
   });
 
-  it('replaces an existing message without evicting another message', () => {
+  it('does not let a replayed incoming id overwrite an existing local message', () => {
     const revokeObjectURL = vi.fn();
     Object.defineProperty(URL, 'revokeObjectURL', {
       value: revokeObjectURL,
@@ -391,8 +418,8 @@ describe('chatStore', () => {
     expect(messages[0].id).toBe('message-0');
     expect(messages.at(-1)?.id).toBe(`message-${MAX_CHAT_MESSAGES - 1}`);
     expect(messages.find((message) => message.id === 'message-100')).toMatchObject({
-      direction: 'in',
-      text: 'replacement',
+      direction: 'out',
+      text: 'local 100',
     });
     expect(revokeObjectURL).not.toHaveBeenCalled();
   });

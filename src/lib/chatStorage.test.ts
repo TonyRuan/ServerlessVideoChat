@@ -8,6 +8,7 @@ import {
   MAX_CHAT_IMAGE_DATA_URL_CHARS,
   MAX_CHAT_STORAGE_CHARS,
   loadChatMessages,
+  loadChatDraft,
   makeConversationId,
   purgePersistedChatStorage,
   saveChatDraft,
@@ -140,6 +141,42 @@ describe('chatStorage', () => {
       value: originalLocalStorage,
       configurable: true,
     });
+  });
+
+  it('persists only opted-in device conversations and strips transient file URLs', () => {
+    const conversationId = 'device:session-1';
+    const originalLocalStorage = globalThis.localStorage;
+    const entries = new Map<string, string>();
+    const memoryStorage = {
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, value: string) => entries.set(key, value),
+      removeItem: (key: string) => entries.delete(key),
+    } as unknown as Storage;
+    Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage, configurable: true });
+
+    saveChatMessages(conversationId, [{
+      ...makeMessage('file-1', 1),
+      conversationId,
+      kind: 'file',
+      file: {
+        mimeType: 'application/octet-stream',
+        name: 'data.bin',
+        size: 5,
+        objectUrl: 'blob:temporary',
+      },
+      fileTransfer: { id: 'file-1', status: 'transferring', bytesTransferred: 2 },
+    }]);
+    saveChatDraft(conversationId, 'later');
+
+    expect(loadChatMessages(conversationId)).toMatchObject([{
+      id: 'file-1',
+      file: { name: 'data.bin', size: 5 },
+      fileTransfer: { status: 'failed', error: '应用已重启，请重新发送文件' },
+    }]);
+    expect(loadChatMessages(conversationId)[0].file?.objectUrl).toBeUndefined();
+    expect(loadChatDraft(conversationId)).toBe('later');
+
+    Object.defineProperty(globalThis, 'localStorage', { value: originalLocalStorage, configurable: true });
   });
 
   it('purges legacy persisted chat history and drafts without touching unrelated keys', () => {

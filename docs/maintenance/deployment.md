@@ -10,6 +10,7 @@ Cloudflare Pages is the preferred deployment target.
 - Custom domain: `chat.uavserver.cn`
 - Production base path: `/`
 - Pages Function: `GET /api/turn-credentials` from the repository root `functions/` directory
+- Android pairing/TURN default hosted URL: `https://chat.uavserver.cn/`
 
 Build before deploying:
 
@@ -97,6 +98,7 @@ Before deploy:
 - `npm run build`
 - Confirm Pages Function bindings exist before relying on dynamic TURN credentials.
 - Keep complete static fallback credentials during the coordinated coturn migration; do not remove them before forced-relay verification.
+- When releasing a new APK, deploy the compatible Pages Function first so Capacitor's `https://localhost` origin can fetch dynamic TURN credentials.
 
 After deploy:
 

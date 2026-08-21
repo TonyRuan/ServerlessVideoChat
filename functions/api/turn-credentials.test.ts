@@ -75,6 +75,23 @@ describe('turn-credentials Pages Function', () => {
     await expect(readJson(response)).resolves.toEqual({ error: 'forbidden' });
   });
 
+  it('allows the Capacitor native origin and returns a narrow CORS header', async () => {
+    const response = await handleTurnCredentialsRequest(
+      new Request('https://svc.example.com/api/turn-credentials', {
+        method: 'GET',
+        headers: { Origin: 'https://localhost' },
+      }),
+      {
+        TURN_SHARED_SECRET: 'secret',
+        TURN_URLS: 'turn:turn.example.com:3478?transport=udp',
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://localhost');
+    expect(response.headers.get('vary')).toBe('Origin');
+  });
+
   it('returns 503 when required configuration is missing or invalid', async () => {
     const missingSecret = await handleTurnCredentialsRequest(
       new Request('https://svc.example.com/api/turn-credentials', { method: 'GET' }),

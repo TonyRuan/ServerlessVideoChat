@@ -13,6 +13,7 @@ Never print, commit, paste into docs, or hardcode the actual values from `.env.l
 - `VITE_TURN_USERNAME`: static fallback TURN username.
 - `VITE_TURN_CREDENTIAL`: static fallback TURN credential.
 - `VITE_TURN_MODE`: optional TURN mode override. Supported values are described in `docs/maintenance/webrtc.md`.
+- `VITE_PUBLIC_APP_URL`: optional hosted app URL used by native pairing links; Android defaults to `https://chat.uavserver.cn/` because its local WebView origin is not shareable.
 
 Cloudflare Pages Function bindings:
 

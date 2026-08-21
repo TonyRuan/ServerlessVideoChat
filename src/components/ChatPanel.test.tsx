@@ -38,7 +38,30 @@ describe('ChatPanel accessibility', () => {
     const markup = renderPanel();
 
     expect(markup).toContain('aria-label="关闭聊天"');
-    expect(markup).toContain('aria-label="选择文件"');
+    expect(markup).toContain('aria-label="选择图片或文件"');
     expect(markup).toContain('aria-label="发送消息"');
+  });
+
+  it('keeps persistent text messages queueable while the paired device is offline', () => {
+    useChatStore.setState({ draftText: '稍后发送' });
+    const markup = renderToStaticMarkup(
+      <ChatPanel
+        isOpen
+        isConnected={false}
+        isSecure={false}
+        isPersistent
+        peerLabel="我的电脑"
+        onClose={() => undefined}
+        onSend={async () => undefined}
+        onAcceptFileTransfer={async () => undefined}
+        onDeclineFileTransfer={async () => undefined}
+      />
+    );
+
+    expect(markup).toContain('与 我的电脑 的会话');
+    expect(markup).toContain('离线 · 文字和图片将在重连后发送');
+    expect(markup).toContain('输入消息，设备上线后自动发送');
+    expect(markup.match(/<textarea[^>]*placeholder="输入消息，设备上线后自动发送"[^>]*>/)?.[0]).not.toContain('disabled');
+    expect(markup).toContain('title="加入待发送队列"');
   });
 });

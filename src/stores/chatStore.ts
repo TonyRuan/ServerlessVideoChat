@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 import {
+  loadChatDraft,
+  loadChatMessages,
   makeConversationId,
   MAX_CHAT_MESSAGES,
-  purgePersistedChatStorage,
+  saveChatDraft,
+  saveChatMessages,
   type ChatFileAttachment,
   type ChatFileTransfer,
   type ChatImageAttachment,
@@ -28,11 +31,12 @@ interface UpdateFileTransferInput extends Partial<ChatFileTransfer> {
 interface ChatStore {
   conversationId: string | null;
   peerId: string | null;
+  isPersistent: boolean;
   messages: ChatMessage[];
   draftText: string;
   isPanelOpen: boolean;
   unreadCount: number;
-  setConversationPeers: (myPeerId: string, peerId: string, callSessionId?: string) => void;
+  setConversationPeers: (myPeerId: string, peerId: string, callSessionId?: string, persistent?: boolean) => void;
   setDraftText: (text: string) => void;
   setPanelOpen: (isOpen: boolean) => void;
   createLocalMessage: (input: CreateLocalMessageInput) => ChatMessage | null;
@@ -134,20 +138,25 @@ const createFileTransferFromPatch = (
   ...patch,
 });
 
-purgePersistedChatStorage();
+const persistState = (state: Pick<ChatStore, 'conversationId' | 'isPersistent' | 'messages' | 'draftText'>) => {
+  if (!state.conversationId || !state.isPersistent) return;
+  saveChatMessages(state.conversationId, state.messages);
+  saveChatDraft(state.conversationId, state.draftText);
+};
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   conversationId: null,
   peerId: null,
+  isPersistent: false,
   messages: [],
   draftText: '',
   isPanelOpen: false,
   unreadCount: 0,
-  setConversationPeers: (myPeerId, peerId, callSessionId) => {
-    const conversationId = makeConversationId(myPeerId, peerId, callSessionId);
+  setConversationPeers: (myPeerId, peerId, callSessionId, persistent = false) => {
+    const conversationId = makeConversationId(myPeerId, peerId, callSessionId, persistent);
     const current = get();
     if (current.conversationId === conversationId) {
-      if (current.peerId !== peerId) set({ peerId });
+      if (current.peerId !== peerId || current.isPersistent !== persistent) set({ peerId, isPersistent: persistent });
       return;
     }
 
@@ -155,13 +164,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({
       conversationId,
       peerId,
-      messages: [],
-      draftText: '',
+      isPersistent: persistent,
+      messages: persistent ? loadChatMessages(conversationId) : [],
+      draftText: persistent ? loadChatDraft(conversationId) : '',
       unreadCount: 0,
     });
   },
   setDraftText: (text) => {
     set({ draftText: text });
+    persistState(get());
   },
   setPanelOpen: (isPanelOpen) => {
     set({ isPanelOpen, unreadCount: isPanelOpen ? 0 : get().unreadCount });
@@ -186,6 +197,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     const messages = upsertMessage(state.messages, message);
     set({ messages, draftText: '' });
+    persistState(get());
 
     void myPeerId;
     return message;
@@ -193,6 +205,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   addIncomingWireMessage: (payload) => {
     const state = get();
     if (!state.conversationId) return;
+    if (state.messages.some((message) => message.id === payload.message.id)) return;
 
     const message: ChatMessage = {
       id: payload.message.id,
@@ -211,10 +224,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages,
       unreadCount: state.isPanelOpen ? state.unreadCount : state.unreadCount + 1,
     });
+    persistState(get());
   },
   addIncomingFileOffer: (payload) => {
     const state = get();
     if (!state.conversationId) return;
+    if (state.messages.some((message) => message.id === payload.message.id)) return;
 
     const message: ChatMessage = {
       id: payload.message.id,
@@ -237,6 +252,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages,
       unreadCount: state.isPanelOpen ? state.unreadCount : state.unreadCount + 1,
     });
+    persistState(get());
   },
   updateFileTransfer: (id, input) => {
     const state = get();
@@ -257,6 +273,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return nextMessage;
     });
     set({ messages });
+    persistState(get());
   },
   updateMessageStatus: (id, status) => {
     const state = get();
@@ -264,5 +281,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       message.id === id ? { ...message, status } : message
     );
     set({ messages });
+    persistState(get());
   },
 }));

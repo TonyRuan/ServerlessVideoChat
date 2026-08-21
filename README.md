@@ -19,6 +19,11 @@
   - 支持点击选择、从剪贴板粘贴、拖拽上传图片，单击图片可放大查看，桌面端可拖动聊天窗口位置。
   - 非图片文件最大 2GiB；接收端确认并选择保存位置后才开始传输，不支持直接写盘的浏览器使用最多 10MiB 的内存下载回退。
   - 文件数据使用独立可靠 DataConnection、256KiB 二进制 AES-GCM 分片和 1MiB 接收端信用窗口；断线后按接收端已写入偏移恢复，收到最终保存确认后才标记发送完成。
+- **长期设备会话（首版）**：
+  - 可通过二维码或粘贴链接配对手机与电脑；设备身份和配对记录保存在本机。
+  - 普通会议仍然不留历史；已配对设备会话会在本机保存最近 200 条文字/图片及草稿，并在离线时排队，双方上线后自动发送。
+  - 配对密钥用于验证 ECDH 公钥交换，消息收到加密确认后才标记已发送。非图片文件仍要求双方在线。
+  - 已提供 Capacitor Android 工程和扫码入口；首版不包含后台常驻、系统推送或云端离线队列。
 - **视频带宽控制**：
   - SDP 协商优先级为 `AV1 > VP9 > H265 > 其他`。
   - 页面左上角会显示当前协商到的视频 codec 和上下行带宽估算。
@@ -34,6 +39,7 @@
 - **状态管理**：Zustand (用于跨组件状态，如 `HeartStore`)
 - **路由**：React Router DOM v7
 - **样式**：Tailwind CSS + `clsx`/`tailwind-merge`
+- **Android**：Capacitor 8，API 26+
 
 ## 📁 核心目录结构 (供 AI 和开发者阅读)
 
@@ -54,7 +60,7 @@ src/
 │   ├── Home.tsx          # 首页，加入/创建房间入口
 │   └── CallPage.tsx      # 通话主页面，包含视频渲染、状态展示、WebRTC 连接逻辑、数据通道通信
 ├── stores/
-│   ├── chatStore.ts      # 当前页面内存态聊天记录、草稿、未读数和发送状态
+│   ├── chatStore.ts      # 普通会议内存态、配对设备持久态聊天和发送状态
 │   └── heartStore.ts     # Zustand Store，管理本地和远端的爱心数据同步
 ├── lib/
 │   ├── chatCrypto.ts     # 聊天 ECDH + AES-GCM 应用层加密
@@ -81,6 +87,7 @@ public/
 ├── 404.html              # GitHub Pages 的 SPA 路由兜底重定向逻辑
 ├── apple-touch-icon.png  # iOS 主屏幕图标
 └── favicon.png           # 浏览器标签页图标
+android/                  # Capacitor Android 原生工程
 ```
 
 ---
@@ -102,6 +109,8 @@ public/
    npm run build
    ```
 
+Android 调试 APK 的完整工具链、构建和模拟器验证见 [`docs/maintenance/android.md`](docs/maintenance/android.md)。
+
 ---
 
 ## 🌐 部署指南
@@ -122,6 +131,7 @@ public/
    - `TURN_URLS`：服务端返回的逗号分隔 TURN 地址；生产建议同时提供 UDP 3478 和 TLS 443。
    - `TURN_CREDENTIAL_TTL_SECONDS`：可选，默认 1200 秒，范围 300-3600。
    - `VITE_TURN_CREDENTIALS_URL`：可选，默认 `/api/turn-credentials`。
+   - `VITE_PUBLIC_APP_URL`：可选，Android 配对链接所用的公开站点地址，默认 `https://chat.uavserver.cn/`。
    - `VITE_TURN_URLS` / `VITE_TURN_USERNAME` / `VITE_TURN_CREDENTIAL`：完整的静态回退配置，仅用于迁移、本地开发或不支持 Function 的托管环境。
    - `VITE_TURN_MODE`：可选。默认 `on` 表示初始连接即加入 TURN 候选；`off` 表示直连优先、失败后自动 fallback；`force` 表示强制 relay，仅建议排障使用。
 5. 点击 **Save and Deploy**。

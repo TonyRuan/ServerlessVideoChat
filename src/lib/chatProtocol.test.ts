@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createWireChatAck,
   CHAT_FILE_STREAM_CHUNK_BYTES,
   createWireChatFileAccept,
   createWireChatFileComplete,
@@ -10,6 +11,7 @@ import {
   createWireChatFileStreamChunk,
   createSessionResumeMessage,
   createWireChatMessage,
+  isWireChatAckPayload,
   isWireChatFileAcceptPayload,
   isWireChatFileCompletePayload,
   isWireChatFileCreditPayload,
@@ -45,6 +47,11 @@ const localMessage: ChatMessage = {
 };
 
 describe('chatProtocol', () => {
+  it('creates and validates message acknowledgements', () => {
+    const ack = createWireChatAck('message-1', 'svc-peer');
+    expect(isWireChatAckPayload(ack)).toBe(true);
+    expect(isWireChatAckPayload({ ...ack, messageId: '' })).toBe(false);
+  });
   it('streams file data in 256 KiB chunks', () => {
     expect(CHAT_FILE_STREAM_CHUNK_BYTES).toBe(256 * 1024);
   });

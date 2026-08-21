@@ -28,7 +28,7 @@ A TURN config is considered complete only when it has at least one TURN URL plus
 4. Refresh dynamic credentials one minute before expiry. Failed refreshes retry after 30 seconds while dynamic credentials were active or no static fallback exists; a pure static fallback retries every five minutes.
 5. Apply refreshed RTC configuration only to future PeerJS connections. Never interrupt an otherwise healthy current connection merely to rotate credentials.
 
-`functions/api/turn-credentials.ts` issues 20-minute coturn REST credentials by default. The username contains the Unix expiry plus a random request id, and the credential is `base64(HMAC-SHA1(TURN_SHARED_SECRET, username))`. Responses are same-origin `GET` only and carry `Cache-Control: no-store`.
+`functions/api/turn-credentials.ts` issues 20-minute coturn REST credentials by default. The username contains the Unix expiry plus a random request id, and the credential is `base64(HMAC-SHA1(TURN_SHARED_SECRET, username))`. Responses are `GET` only and carry `Cache-Control: no-store`; browser requests stay same-origin, while the Function narrowly allows the Capacitor origins `https://localhost` and `capacitor://localhost` with a matching CORS header.
 
 ## Fallback Behavior
 
@@ -114,7 +114,9 @@ Transfer progress is published to chat UI state at start, completion, and then a
 
 Non-image file offers are accepted up to 2GiB. When the browser supports the File System Access API, accepted files are streamed to the receiver's chosen disk path. Browsers without `showSaveFilePicker` fall back to memory-backed chunks and a `blob:` download URL after completion, but that memory fallback remains capped at 10MiB to avoid loading very large files into RAM. Regular `CHAT_MESSAGE` payloads must not carry non-image file `dataUrl` values.
 
-Chat message content, file data, and drafts are memory-only. The store keeps at most 200 messages and revokes evicted `blob:` download URLs. Old persisted chat keys are cleaned up opportunistically. Do not add localStorage persistence for attachments without an explicit privacy/product decision.
+Regular meeting chat content, file data, and drafts are memory-only. Explicit `mode=device` sessions are the privacy exception: their text/image messages and drafts are stored locally under a device-scoped conversation id, capped at 200 messages and a bounded serialized size. Offline text/images stay pending until an authenticated channel reconnects and the receiver returns an encrypted ACK. File bytes, object URLs, partial transfer state, and file handles are not persisted; interrupted file cards are marked failed after restart.
+
+Device sessions use a stable local PeerJS id. Their ECDH P-256 public-key messages include an HMAC proof derived from the pairing secret, and the final AES-GCM key derivation mixes that secret into the ECDH result. Normal meetings retain the original ephemeral unauthenticated ECDH handshake and memory-only store. Device-mode reconnect uses the normal backoff sequence and then keeps retrying at the final interval while the page/app remains active.
 
 ## TURN Operations Notes
 

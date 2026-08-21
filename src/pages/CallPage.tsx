@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { Capacitor } from '@capacitor/core';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Loader2, Volume2, VolumeX } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
@@ -26,6 +27,7 @@ import {
 } from '../lib/chatCrypto';
 import {
   CHAT_FILE_STREAM_CHUNK_BYTES,
+  createWireChatAck,
   createWireChatFileAccept,
   createWireChatFileComplete,
   createWireChatFileCredit,
@@ -40,6 +42,7 @@ import {
   isWireChatFileDeclinePayload,
   isWireChatFileErrorPayload,
   isWireChatFileOfferPayload,
+  isWireChatAckPayload,
   isSessionResumePayload,
   isWireChatPayload,
   type WireChatFileOfferPayload,
@@ -80,6 +83,7 @@ import {
   resolveCallSessionState,
   type CallSessionState,
 } from '../lib/callSession';
+import { resolvePublicAppBaseUrl } from '../lib/runtimeUrls';
 import {
   getCallConnectionIssue,
   getEffectiveConnectionStatus,
@@ -121,6 +125,12 @@ import {
 import { cn } from '../lib/utils';
 import { isHeartPayload, isQualityChangePayload } from '../lib/realtimeProtocol';
 import { watchPeerTransport } from '../lib/transportWatchdog';
+import {
+  loadOrCreateDeviceIdentity,
+  loadPairedDevices,
+  savePairedDevice,
+  updatePairedDeviceRemote,
+} from '../lib/devicePairing';
 
 const FILE_TRANSFER_BUFFER_POLL_MS = 20;
 const EMPTY_TRANSPORT_DIAGNOSTIC: TransportDiagnosticSnapshot = {
@@ -220,6 +230,8 @@ const isSameCallSession = (a: CallSessionState, b: CallSessionState) =>
   a.sessionId === b.sessionId
   && a.role === b.role
   && a.peerId === b.peerId
+  && a.mode === b.mode
+  && a.pairingSecret === b.pairingSecret
   && a.mediaDefaults.audioEnabled === b.mediaDefaults.audioEnabled
   && a.mediaDefaults.videoEnabled === b.mediaDefaults.videoEnabled;
 
@@ -232,6 +244,19 @@ export default function CallPage() {
   const { remotePeerId } = useParams<{ remotePeerId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const [callSession, setCallSession] = useState<CallSessionState>(() =>
+    parseCallSessionHash(location.hash) ?? {
+      sessionId: createCallSessionId(),
+      role: remotePeerId ? 'guest' : 'host',
+      mediaDefaults: { ...DEFAULT_CALL_MEDIA_DEFAULTS },
+    }
+  );
+  const [deviceIdentity] = useState(loadOrCreateDeviceIdentity);
+  const pairedDevice = callSession.mode === 'device'
+    ? loadPairedDevices().find((item) => item.sessionId === callSession.sessionId)
+    : undefined;
+  const pairingSecret = callSession.pairingSecret ?? pairedDevice?.pairingSecret;
+  const isPersistentDeviceSession = callSession.mode === 'device' && Boolean(pairingSecret);
   const { 
     stream, 
     error: streamError, 
@@ -259,14 +284,7 @@ export default function CallPage() {
     applyTurnMode,
     turnCredentialSource,
     turnCredentialExpiresAt,
-  } = usePeer();
-  const [callSession, setCallSession] = useState<CallSessionState>(() =>
-    parseCallSessionHash(location.hash) ?? {
-      sessionId: createCallSessionId(),
-      role: remotePeerId ? 'guest' : 'host',
-      mediaDefaults: { ...DEFAULT_CALL_MEDIA_DEFAULTS },
-    }
-  );
+  } = usePeer(isPersistentDeviceSession ? deviceIdentity.peerId : undefined);
   const initialAudioEnabled = callSession.mediaDefaults.audioEnabled;
   const initialVideoEnabled = callSession.mediaDefaults.videoEnabled;
 
@@ -303,7 +321,9 @@ export default function CallPage() {
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isDataConnected, setIsDataConnected] = useState(false);
   const [isChatSecure, setIsChatSecure] = useState(false);
-  const [conversationPeerId, setConversationPeerId] = useState<string | null>(remotePeerId ?? null);
+  const [conversationPeerId, setConversationPeerId] = useState<string | null>(
+    remotePeerId ?? pairedDevice?.remotePeerId ?? null
+  );
   const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [, setMediaReconnectCount] = useState(0);
@@ -360,6 +380,33 @@ export default function CallPage() {
   }, [callSession]);
 
   useEffect(() => {
+    if (callSession.mode !== 'device' || !pairingSecret) return;
+    const now = Date.now();
+    const existing = loadPairedDevices().find((item) => item.sessionId === callSession.sessionId);
+    savePairedDevice({
+      sessionId: callSession.sessionId,
+      pairingSecret,
+      role: callSession.role,
+      localPeerId: deviceIdentity.peerId,
+      ...(conversationPeerId ?? remotePeerId ?? existing?.remotePeerId
+        ? { remotePeerId: conversationPeerId ?? remotePeerId ?? existing?.remotePeerId }
+        : {}),
+      remoteName: existing?.remoteName ?? (deviceIdentity.name === '我的手机' ? '我的电脑' : '我的手机'),
+      createdAt: existing?.createdAt ?? now,
+      lastOpenedAt: now,
+    });
+  }, [
+    callSession.mode,
+    callSession.role,
+    callSession.sessionId,
+    conversationPeerId,
+    deviceIdentity.name,
+    deviceIdentity.peerId,
+    pairingSecret,
+    remotePeerId,
+  ]);
+
+  useEffect(() => {
     reconnectEnabledRef.current = true;
     return () => {
       reconnectEnabledRef.current = false;
@@ -400,8 +447,14 @@ export default function CallPage() {
 
   useEffect(() => {
     if (!myId || !conversationPeerId) return;
-    setConversationPeers(myId, conversationPeerId, callSession.sessionId);
-  }, [callSession.sessionId, myId, conversationPeerId, setConversationPeers]);
+    setConversationPeers(myId, conversationPeerId, callSession.sessionId, isPersistentDeviceSession);
+  }, [callSession.sessionId, conversationPeerId, isPersistentDeviceSession, myId, setConversationPeers]);
+
+  useEffect(() => {
+    if (isPersistentDeviceSession && conversationPeerId) {
+      setIsChatOpen(true);
+    }
+  }, [conversationPeerId, isPersistentDeviceSession]);
 
   useEffect(() => {
     const nextSession = resolveCallSessionState(
@@ -454,7 +507,23 @@ export default function CallPage() {
 
   const ensureChatCryptoSession = useCallback(async (conn?: DataConnection | null) => {
     if (!chatCryptoSessionPromiseRef.current) {
-      chatCryptoSessionPromiseRef.current = createChatCryptoSession().then((session) => {
+      const sessionState = callSessionRef.current;
+      const storedPair = sessionState.mode === 'device'
+        ? loadPairedDevices().find((item) => item.sessionId === sessionState.sessionId)
+        : undefined;
+      const secret = sessionState.pairingSecret ?? storedPair?.pairingSecret;
+      const authentication = sessionState.mode === 'device' && secret && myId && conn?.peer
+        ? {
+            context: sessionState.sessionId,
+            localPeerId: myId,
+            remotePeerId: conn.peer,
+            sharedSecret: secret,
+          }
+        : undefined;
+      if (sessionState.mode === 'device' && !authentication) {
+        throw new Error('设备配对信息不完整');
+      }
+      chatCryptoSessionPromiseRef.current = createChatCryptoSession(authentication).then((session) => {
         chatCryptoSessionRef.current = session;
         return session;
       });
@@ -462,15 +531,11 @@ export default function CallPage() {
 
     const session = await chatCryptoSessionPromiseRef.current;
     if (conn?.open && !chatCryptoPublicKeySentRef.current) {
-      sendDataConnectionPayload(conn, {
-        type: 'CHAT_CRYPTO_KEY',
-        version: 1,
-        publicKey: session.publicKey,
-      });
+      sendDataConnectionPayload(conn, session.keyMessage);
       chatCryptoPublicKeySentRef.current = true;
     }
     return session;
-  }, []);
+  }, [myId]);
 
   const createConnectionMetadata = useCallback(() => ({
     sessionId: callSessionRef.current.sessionId,
@@ -706,6 +771,23 @@ export default function CallPage() {
     }
   }, [myId, updateFileTransfer]);
 
+  const flushPendingChatMessages = useCallback(async (
+    conn: DataConnection,
+    session: ChatCryptoSession
+  ) => {
+    if (callSessionRef.current.mode !== 'device' || !myId) return;
+    const pendingMessages = useChatStore.getState().messages.filter((message) =>
+      message.direction === 'out' &&
+      !message.file &&
+      message.status !== 'sent'
+    );
+
+    for (const message of pendingMessages) {
+      await sendEncryptedDataPayload(conn, session, createWireChatMessage(message, myId));
+      updateMessageStatus(message.id, 'sending');
+    }
+  }, [myId, updateMessageStatus]);
+
   const handleDataMessage = useCallback(async (data: unknown, conn: DataConnection) => {
     if (isSessionResumePayload(data)) {
       if (isSessionResumePeerValid({
@@ -715,8 +797,19 @@ export default function CallPage() {
         payload: data,
       })) {
         setConversationPeerId(data.peerId);
+        if (callSessionRef.current.mode === 'device') {
+          updatePairedDeviceRemote({
+            sessionId: callSessionRef.current.sessionId,
+            remotePeerId: data.peerId,
+          });
+        }
         if (myId) {
-          setConversationPeers(myId, data.peerId, callSessionRef.current.sessionId);
+          setConversationPeers(
+            myId,
+            data.peerId,
+            callSessionRef.current.sessionId,
+            callSessionRef.current.mode === 'device'
+          );
         }
       }
       return;
@@ -725,7 +818,7 @@ export default function CallPage() {
     if (isChatCryptoKeyMessage(data)) {
       try {
         const session = await ensureChatCryptoSession(conn);
-        await session.acceptPeerPublicKey(data.publicKey);
+        await session.acceptPeerKeyMessage(data);
         setIsChatSecure(true);
         for (const [transferId, transfer] of incomingFileTransfersRef.current) {
           await sendEncryptedDataPayload(conn, session, createWireChatFileCredit(
@@ -744,6 +837,7 @@ export default function CallPage() {
           ));
           pendingFileCompletionsRef.current.delete(transferId);
         }
+        await flushPendingChatMessages(conn, session);
       } catch (err) {
         console.error('Chat crypto handshake failed:', err);
         setIsChatSecure(false);
@@ -758,16 +852,35 @@ export default function CallPage() {
         if (isWireChatPayload(payload)) {
           if (!isPayloadPeerValid(payload.message, conn.peer)) return;
           if (myId) {
-            setConversationPeers(myId, payload.message.from, callSessionRef.current.sessionId);
+            setConversationPeers(
+              myId,
+              payload.message.from,
+              callSessionRef.current.sessionId,
+              callSessionRef.current.mode === 'device'
+            );
           }
           addIncomingWireMessage(payload);
+          if (myId) {
+            await sendEncryptedDataPayload(conn, session, createWireChatAck(payload.message.id, myId));
+          }
+          return;
+        }
+
+        if (isWireChatAckPayload(payload)) {
+          if (!isPayloadPeerValid(payload, conn.peer)) return;
+          updateMessageStatus(payload.messageId, 'sent');
           return;
         }
 
         if (isWireChatFileOfferPayload(payload)) {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
           if (myId) {
-            setConversationPeers(myId, payload.from, callSessionRef.current.sessionId);
+            setConversationPeers(
+              myId,
+              payload.from,
+              callSessionRef.current.sessionId,
+              callSessionRef.current.mode === 'device'
+            );
           }
           incomingFileOffersRef.current.set(payload.transferId, payload);
           addIncomingFileOffer(payload);
@@ -858,11 +971,13 @@ export default function CallPage() {
     addIncomingWireMessage,
     changeQuality,
     ensureChatCryptoSession,
+    flushPendingChatMessages,
     myId,
     receiveHeart,
     setConversationPeers,
     startOutgoingFileTransfer,
     updateFileTransfer,
+    updateMessageStatus,
   ]);
 
   const handleBulkDataMessage = useCallback(async (data: unknown, conn: DataConnection) => {
@@ -986,7 +1101,9 @@ export default function CallPage() {
     })) return;
 
     setDataReconnectCount((count) => {
-      const delayMs = reconnectDelayMs(count);
+      const delayMs = reconnectDelayMs(
+        callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
+      );
       if (delayMs === null) return count;
 
       if (dataReconnectTimerRef.current) {
@@ -1008,7 +1125,9 @@ export default function CallPage() {
     })) return;
 
     setMediaReconnectCount((count) => {
-      const delayMs = reconnectDelayMs(count);
+      const delayMs = reconnectDelayMs(
+        callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
+      );
       if (delayMs === null) return count;
 
       if (mediaReconnectTimerRef.current) {
@@ -1070,8 +1189,19 @@ export default function CallPage() {
     resetChatCryptoState();
     dataConnRef.current = conn;
     setConversationPeerId(conn.peer);
+    if (callSessionRef.current.mode === 'device') {
+      updatePairedDeviceRemote({
+        sessionId: callSessionRef.current.sessionId,
+        remotePeerId: conn.peer,
+      });
+    }
     if (myId) {
-      setConversationPeers(myId, conn.peer, callSessionRef.current.sessionId);
+      setConversationPeers(
+        myId,
+        conn.peer,
+        callSessionRef.current.sessionId,
+        callSessionRef.current.mode === 'device'
+      );
     }
 
     const handleOpen = () => {
@@ -1720,6 +1850,12 @@ export default function CallPage() {
       throw new Error('Peer 尚未就绪');
     }
 
+    const conn = dataConnRef.current;
+    const canSendNow = Boolean(conn?.open && chatCryptoSessionRef.current?.isReady());
+    if (file && !canSendNow) {
+      throw new Error('文件需要双方在线并建立加密连接后发送');
+    }
+
     const transferId = file ? createTransferId() : undefined;
     const message = createLocalMessage({
       myPeerId: myId,
@@ -1739,14 +1875,15 @@ export default function CallPage() {
       throw new Error('没有可发送的内容');
     }
 
-    const conn = dataConnRef.current;
     if (!conn?.open) {
+      if (isPersistentDeviceSession && !file) return;
       updateMessageStatus(message.id, 'failed');
       throw new Error('聊天连接尚未建立');
     }
 
     const session = await ensureChatCryptoSession(conn);
     if (!session.isReady()) {
+      if (isPersistentDeviceSession && !file) return;
       updateMessageStatus(message.id, 'failed');
       throw new Error('加密通道尚未就绪');
     }
@@ -1765,13 +1902,19 @@ export default function CallPage() {
       } else {
         await sendEncryptedDataPayload(conn, session, createWireChatMessage(message, myId));
       }
-      updateMessageStatus(message.id, 'sent');
+      if (file || !isPersistentDeviceSession) {
+        updateMessageStatus(message.id, 'sent');
+      }
     } catch (err) {
       outgoingFileTransfersRef.current.delete(message.id);
+      if (isPersistentDeviceSession && !file) {
+        updateMessageStatus(message.id, 'sending');
+        return;
+      }
       updateMessageStatus(message.id, 'failed');
       throw err instanceof Error ? err : new Error('发送失败');
     }
-  }, [createLocalMessage, ensureChatCryptoSession, myId, updateMessageStatus]);
+  }, [createLocalMessage, ensureChatCryptoSession, isPersistentDeviceSession, myId, updateMessageStatus]);
 
   const handleAcceptFileTransfer = useCallback(async (messageId: string) => {
     const offer = incomingFileOffersRef.current.get(messageId);
@@ -1890,9 +2033,22 @@ export default function CallPage() {
     });
   }, [ensureChatCryptoSession, myId, updateFileTransfer]);
 
+  const publicAppBaseUrl = resolvePublicAppBaseUrl({
+    configuredUrl: import.meta.env.VITE_PUBLIC_APP_URL,
+    isNative: Capacitor.isNativePlatform(),
+    origin: window.location.origin,
+    basePath: import.meta.env.BASE_URL,
+  });
+
   const copyLink = () => {
-    const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    const link = buildInviteLink(baseUrl, myId, callSession.sessionId, callSession.mediaDefaults);
+    const link = buildInviteLink(
+      publicAppBaseUrl,
+      myId,
+      callSession.sessionId,
+      callSession.mediaDefaults,
+      callSession.mode,
+      pairingSecret
+    );
     
     navigator.clipboard.writeText(link);
     setCopied(true);
@@ -1900,8 +2056,14 @@ export default function CallPage() {
   };
 
   const inviteLink = (() => {
-    const baseUrl = window.location.origin + import.meta.env.BASE_URL;
-    return buildInviteLink(baseUrl, myId, callSession.sessionId, callSession.mediaDefaults);
+    return buildInviteLink(
+      publicAppBaseUrl,
+      myId,
+      callSession.sessionId,
+      callSession.mediaDefaults,
+      callSession.mode,
+      pairingSecret
+    );
   })();
 
   const endCall = () => {
@@ -1996,7 +2158,7 @@ export default function CallPage() {
               <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
             </div>
             <h2 className="text-2xl font-semibold">
-              {connectionStatus === 'waiting' ? '等待对方加入...' :
+              {connectionStatus === 'waiting' ? (isPersistentDeviceSession ? '等待已配对设备上线...' : '等待对方加入...') :
                connectionStatus === 'connecting' ? '连接中...' :
                connectionStatus === 'connected' ? '已连接' :
                connectionStatus === 'disconnected' ? '连接已断开' :
@@ -2020,7 +2182,12 @@ export default function CallPage() {
             )}
 
             {connectionStatus === 'waiting' && myId && (
-              <InviteLinkCard inviteLink={inviteLink} copied={copied} onCopy={copyLink} />
+              <InviteLinkCard
+                inviteLink={inviteLink}
+                copied={copied}
+                onCopy={copyLink}
+                mode={isPersistentDeviceSession ? 'device' : 'meeting'}
+              />
             )}
             </div>
           </div>
@@ -2028,7 +2195,7 @@ export default function CallPage() {
       </div>
 
       {/* Local Video (PIP) */}
-      <div className="absolute top-4 right-4 w-48 aspect-video bg-gray-800 rounded-lg overflow-hidden shadow-2xl ring-1 ring-gray-700 transition-all duration-300 z-10">
+      <div className="absolute top-[calc(1rem+var(--svc-safe-area-top))] right-[calc(1rem+var(--svc-safe-area-right))] w-48 aspect-video bg-gray-800 rounded-lg overflow-hidden shadow-2xl ring-1 ring-gray-700 transition-all duration-300 z-10">
         {stream && (
           <video
             ref={localVideoRef}
@@ -2045,6 +2212,8 @@ export default function CallPage() {
         isConnected={isDataConnected}
         isSecure={isChatSecure}
         connectionIssue={displayedCallConnectionIssue}
+        isPersistent={isPersistentDeviceSession}
+        peerLabel={pairedDevice?.remoteName}
         onClose={() => setIsChatOpen(false)}
         onSend={handleSendChat}
         onAcceptFileTransfer={handleAcceptFileTransfer}
@@ -2062,7 +2231,7 @@ export default function CallPage() {
             if (event.key === 'Escape') setIsMobileMoreOpen(false);
           }}
           className={cn(
-            "absolute inset-x-4 bottom-[calc(7rem+env(safe-area-inset-bottom))] z-[60] rounded-2xl border border-gray-700 bg-gray-900/95 p-3 text-white shadow-2xl backdrop-blur-md transition-all duration-300 ease-in-out md:hidden",
+            "absolute inset-x-4 bottom-[calc(7rem+var(--svc-safe-area-bottom))] z-[60] rounded-2xl border border-gray-700 bg-gray-900/95 p-3 text-white shadow-2xl backdrop-blur-md transition-all duration-300 ease-in-out md:hidden",
             controlsVisible ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0 pointer-events-none"
           )}
         >

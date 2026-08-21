@@ -1,7 +1,7 @@
 # ServerlessVideoChat Codex Context
 
 > Keep this file concise. Update the relevant `docs/maintenance/*` document first, then keep this summary aligned.
-> Last synced: 2026-07-14.
+> Last synced: 2026-08-21.
 
 ## What This Project Is
 
@@ -14,6 +14,7 @@ Primary stack:
 - PeerJS + WebRTC
 - Zustand
 - Tailwind CSS
+- Capacitor 8 Android wrapper
 
 ## Current Behavior To Remember
 
@@ -22,7 +23,8 @@ Primary stack:
 - The host's camera/microphone state at creation becomes the guest default. Voice-only joins request only a microphone; text-only joins request no device. Disabled placeholder tracks reserve PeerJS senders so a later manual enable requests and replaces only that device.
 - Home media preview is explicit rather than automatic; pre-preview controls only set defaults, so pasted text/voice invites do not trigger unrelated device permission prompts.
 - The home join form accepts only a complete valid HTTP/HTTPS invite URL; bare Peer IDs are rejected.
-- Chat messages and drafts are memory-only by design; refresh or close clears them. Accepted files may be saved directly to disk when the receiver's browser supports it.
+- Regular meeting chat is memory-only. Explicit paired-device sessions persist capped text/image history and drafts locally, queue offline text/images, and keep retrying while the app screen is active; non-image files remain online-only.
+- Device pairing stores a stable local PeerJS id and pairing secret. The secret authenticates ECDH key messages and is mixed into the AES-GCM key derivation; encrypted message ACKs drive pending/sent state.
 - Default TURN mode is `on`, so complete TURN configuration adds candidates during initial ICE gathering. A valid `/api/turn-credentials` response is preferred; complete static `VITE_TURN_*` values are migration/local fallback.
 - URL query/hash and `VITE_TURN_MODE` can still disable TURN or force relay-only diagnostics.
 - Media/control/bulk transports use 15-second establishment deadlines, 5-second disconnected grace, immediate failed-state recovery, and six guest-only retries with jitter. Repeated media establishment failure can promote future connections from `on` to relay-only `force`; host remains passive.
@@ -41,6 +43,7 @@ Primary stack:
 - `docs/maintenance/testing.md`: required and focused verification commands.
 - `docs/maintenance/deployment.md`: Cloudflare Pages and GitHub Pages deploy flows.
 - `docs/maintenance/git.md`: staging, committing, pushing, safe directory workaround.
+- `docs/maintenance/android.md`: Capacitor scope, toolchain, debug APK build, and emulator QA.
 
 ## Key Files
 
@@ -55,6 +58,8 @@ Primary stack:
 - `src/lib/transportWatchdog.ts`: data-transport watchdog lifecycle.
 - `src/lib/turnFallback.ts`: connection-recovery status labels.
 - `src/lib/callSession.ts`: URL session parsing and invite links.
+- `src/lib/devicePairing.ts`: stable identity and paired-device records.
+- `src/lib/runtimeUrls.ts`: hosted invite and native TURN endpoint selection.
 - `src/lib/callConnectionPolicy.ts`: call role, metadata, replacement, and peer-binding policy.
 - `src/lib/fileTransferBinary.ts`: binary file frames.
 - `src/lib/fileTransferFlow.ts`: credit, ACK, and resume calculations.
@@ -97,3 +102,4 @@ Server SSH access details are in `docs/maintenance/environment.md`. Do not print
 - WebRTC behavior depends on real browser/network/media permission state.
 - Cloudflare Pages uses root-path hosting; GitHub Pages uses `/ServerlessVideoChat/`.
 - Do not approve camera/microphone browser prompts unless the user explicitly authorizes it.
+- Android v1 has no background service, push notification, or cloud queue. App data clearing removes pairing and history.

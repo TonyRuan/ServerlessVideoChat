@@ -42,6 +42,8 @@ interface ChatPanelProps {
   isConnected: boolean;
   isSecure: boolean;
   connectionIssue?: string | null;
+  isPersistent?: boolean;
+  peerLabel?: string;
   onClose: () => void;
   onSend: (input: { text?: string; image?: ChatImageAttachment; file?: File }) => Promise<void>;
   onAcceptFileTransfer: (messageId: string) => Promise<void>;
@@ -153,6 +155,8 @@ export function ChatPanel({
   isConnected,
   isSecure,
   connectionIssue,
+  isPersistent = false,
+  peerLabel,
   onClose,
   onSend,
   onAcceptFileTransfer,
@@ -182,7 +186,9 @@ export function ChatPanel({
   const dragPositionRef = useRef<ChatPanelPosition | null>(null);
   const fileDragDepthRef = useRef(0);
 
-  const canSend = isConnected && isSecure && !isSending && Boolean(draftText.trim() || selectedImage || selectedFile);
+  const hasSendableContent = Boolean(draftText.trim() || selectedImage || selectedFile);
+  const canQueueOffline = isPersistent && !selectedFile;
+  const canSend = !isSending && hasSendableContent && ((isConnected && isSecure) || canQueueOffline);
 
   const restorePreviousFocus = useCallback(() => {
     const previouslyFocusedElement = previouslyFocusedElementRef.current;
@@ -202,10 +208,10 @@ export function ChatPanel({
 
     const activeElement = document.activeElement;
     previouslyFocusedElementRef.current = activeElement instanceof window.HTMLElement ? activeElement : null;
-    textareaRef.current?.focus();
+    if (!isPersistent) textareaRef.current?.focus();
 
     return restorePreviousFocus;
-  }, [isOpen, restorePreviousFocus]);
+  }, [isOpen, isPersistent, restorePreviousFocus]);
 
   useEffect(() => {
     if (isOpen) {
@@ -331,6 +337,9 @@ export function ChatPanel({
         setSelectedImage(image);
         setSelectedFile(null);
       } else {
+        if (isPersistent && (!isConnected || !isSecure)) {
+          throw new Error('文件需要双方在线并建立加密连接后发送');
+        }
         validateFileForTransfer(file);
         setSelectedFile(file);
         setSelectedImage(null);
@@ -469,11 +478,19 @@ export function ChatPanel({
         >
           <div>
             <h2 id="chat-panel-title" className="text-sm font-semibold">
-              聊天
+              {isPersistent ? `与 ${peerLabel ?? '已配对设备'} 的会话` : '聊天'}
             </h2>
             <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-400">
               <LockKeyhole className={cn('h-3.5 w-3.5', isSecure ? 'text-green-400' : 'text-amber-400')} />
-              {connectionIssue ? '网络直连失败' : isSecure ? '加密通道已就绪' : isConnected ? '正在建立加密通道' : '等待聊天连接'}
+              {connectionIssue
+                ? '网络直连失败'
+                : isSecure
+                  ? (isPersistent ? '在线 · 已认证加密直连' : '加密通道已就绪')
+                  : isConnected
+                    ? '正在建立加密通道'
+                    : isPersistent
+                      ? '离线 · 文字和图片将在重连后发送'
+                      : '等待聊天连接'}
             </div>
           </div>
           <Button
@@ -609,7 +626,9 @@ export function ChatPanel({
                     )}
                     <div className={cn('mt-1 text-[10px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
                       {formatTime(message.createdAt)}
-                      {isMine && message.status !== 'sent' ? ` · ${message.status === 'failed' ? '失败' : '发送中'}` : ''}
+                      {isMine && message.status !== 'sent'
+                        ? ` · ${message.status === 'failed' ? '发送失败' : isPersistent && !isSecure ? '待发送' : '发送中'}`
+                        : ''}
                     </div>
                   </div>
                 </div>
@@ -680,8 +699,8 @@ export function ChatPanel({
               size="icon"
               className="h-10 w-10 rounded-full bg-gray-800 text-gray-100 hover:bg-gray-700"
               onClick={() => fileInputRef.current?.click()}
-              title="选择文件"
-              aria-label="选择文件"
+              title={isPersistent && (!isConnected || !isSecure) ? '离线时可选择图片；其他文件需要双方在线' : '选择文件'}
+              aria-label="选择图片或文件"
             >
               <Paperclip className="h-5 w-5" />
             </Button>
@@ -696,7 +715,13 @@ export function ChatPanel({
                   void handleSend();
                 }
               }}
-              placeholder={connectionIssue ? '网络连接恢复后可发送' : isConnected ? '输入消息' : '聊天连接后可发送'}
+              placeholder={connectionIssue
+                ? (isPersistent ? '可先输入，恢复连接后自动发送' : '网络连接恢复后可发送')
+                : isConnected
+                  ? '输入消息'
+                  : isPersistent
+                    ? '输入消息，设备上线后自动发送'
+                    : '聊天连接后可发送'}
               rows={1}
               className="max-h-24 min-h-10 flex-1 resize-none rounded-xl border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
@@ -706,7 +731,7 @@ export function ChatPanel({
               className="h-10 w-10 rounded-full"
               onClick={() => void handleSend()}
               disabled={!canSend}
-              title={!isSecure ? '加密通道建立后可发送' : '发送'}
+              title={!isSecure && !canQueueOffline ? '加密通道建立后可发送' : canQueueOffline && !isSecure ? '加入待发送队列' : '发送'}
               aria-label="发送消息"
             >
               <Send className="h-4 w-4" />

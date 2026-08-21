@@ -1,4 +1,5 @@
 export type CallSessionRole = 'host' | 'guest';
+export type CallSessionMode = 'device';
 
 export interface CallMediaDefaults {
   audioEnabled: boolean;
@@ -14,17 +15,22 @@ export interface CallSessionState {
   sessionId: string;
   role: CallSessionRole;
   peerId?: string;
+  mode?: CallSessionMode;
+  pairingSecret?: string;
   mediaDefaults: CallMediaDefaults;
 }
 
 export interface ParsedInviteInput {
   peerId: string;
   sessionId: string;
+  mode?: CallSessionMode;
+  pairingSecret?: string;
   mediaDefaults: CallMediaDefaults;
 }
 
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
 const SAFE_PEER_ID_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
+const SAFE_PAIRING_SECRET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 
 export function createCallSessionId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -68,10 +74,14 @@ export function parseCallSessionHash(hash: string): CallSessionState | null {
   if (!isValidCallSessionId(sessionId)) return null;
 
   const peerId = params.get('peer') ?? '';
+  const mode = params.get('mode') === 'device' ? 'device' : undefined;
+  const pairingSecret = params.get('pair') ?? '';
   return {
     sessionId,
     role: normalizeRole(params.get('role')),
     ...(peerId && isValidPeerId(peerId) ? { peerId } : {}),
+    ...(mode ? { mode } : {}),
+    ...(mode && SAFE_PAIRING_SECRET_PATTERN.test(pairingSecret) ? { pairingSecret } : {}),
     mediaDefaults: parseMediaDefaults(params),
   };
 }
@@ -88,6 +98,10 @@ export function resolveCallSessionState(
     sessionId: parsed.sessionId,
     role: parsed.role,
     ...(peerId ? { peerId } : {}),
+    ...(parsed.mode ?? current.mode ? { mode: parsed.mode ?? current.mode } : {}),
+    ...(parsed.pairingSecret ?? current.pairingSecret
+      ? { pairingSecret: parsed.pairingSecret ?? current.pairingSecret }
+      : {}),
     mediaDefaults: parsed.mediaDefaults,
   };
 }
@@ -123,15 +137,26 @@ export function parseInviteInput(input: string): ParsedInviteInput | null {
   return {
     peerId,
     sessionId: session.sessionId,
+    ...(session.mode ? { mode: session.mode } : {}),
+    ...(session.pairingSecret ? { pairingSecret: session.pairingSecret } : {}),
     mediaDefaults: session.mediaDefaults,
   };
 }
 
-export function buildCallSessionHash({ sessionId, role, peerId, mediaDefaults }: CallSessionState) {
+export function buildCallSessionHash({
+  sessionId,
+  role,
+  peerId,
+  mode,
+  pairingSecret,
+  mediaDefaults,
+}: CallSessionState) {
   const params = new URLSearchParams();
   params.set('session', sessionId);
   params.set('role', role);
   if (peerId) params.set('peer', peerId);
+  if (mode) params.set('mode', mode);
+  if (mode === 'device' && pairingSecret) params.set('pair', pairingSecret);
   if (!mediaDefaults.audioEnabled) params.set('audio', '0');
   if (!mediaDefaults.videoEnabled) params.set('video', '0');
   return `#${params.toString()}`;
@@ -141,12 +166,16 @@ export function buildInviteLink(
   baseUrl: string,
   hostPeerId: string,
   sessionId: string,
-  mediaDefaults: CallMediaDefaults = { ...DEFAULT_CALL_MEDIA_DEFAULTS }
+  mediaDefaults: CallMediaDefaults = { ...DEFAULT_CALL_MEDIA_DEFAULTS },
+  mode?: CallSessionMode,
+  pairingSecret?: string
 ) {
   const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   return `${cleanBaseUrl}/call/${hostPeerId}${buildCallSessionHash({
     sessionId,
     role: 'guest',
+    ...(mode ? { mode } : {}),
+    ...(pairingSecret ? { pairingSecret } : {}),
     mediaDefaults,
   })}`;
 }

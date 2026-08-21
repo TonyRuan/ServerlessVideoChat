@@ -32,6 +32,13 @@ export interface WireChatPayload {
   message: WireChatMessage;
 }
 
+export interface WireChatAckPayload {
+  type: 'CHAT_ACK';
+  version: 1;
+  messageId: string;
+  from: string;
+}
+
 export type WireChatFileSaveMode = 'file-system' | 'memory';
 
 export type WireChatFileMetadata = Omit<ChatFileAttachment, 'dataUrl' | 'objectUrl'>;
@@ -128,6 +135,15 @@ export function createWireChatMessage(message: ChatMessage, from: string): WireC
       image: message.image,
       createdAt: message.createdAt,
     },
+  };
+}
+
+export function createWireChatAck(messageId: string, from: string): WireChatAckPayload {
+  return {
+    type: 'CHAT_ACK',
+    version: 1,
+    messageId,
+    from,
   };
 }
 
@@ -349,6 +365,17 @@ export function isWireChatPayload(payload: unknown): payload is WireChatPayload 
   if (message.kind === 'image') return hasImage && !hasText && !message.file;
   if (message.kind === 'file') return false;
   return hasText && hasImage;
+}
+
+export function isWireChatAckPayload(payload: unknown): payload is WireChatAckPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'CHAT_ACK' &&
+    record.version === 1 &&
+    isBoundedIdentifier(record.messageId) &&
+    isBoundedIdentifier(record.from)
+  );
 }
 
 function isNonEmptyString(value: unknown) {

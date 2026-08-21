@@ -61,10 +61,20 @@ export interface ChatMessage {
 
 const CHAT_STORAGE_PREFIX = 'serverlessVideoChat:chat:v1';
 const DRAFT_STORAGE_PREFIX = 'serverlessVideoChat:chatDraft:v1';
+const PERSISTENT_CONVERSATION_PREFIX = 'device:';
 
-export function makeConversationId(peerA: string, peerB: string, callSessionId?: string) {
-  if (callSessionId?.trim()) return `session:${callSessionId}`;
+export function makeConversationId(
+  peerA: string,
+  peerB: string,
+  callSessionId?: string,
+  persistent = false
+) {
+  if (callSessionId?.trim()) return `${persistent ? PERSISTENT_CONVERSATION_PREFIX : 'session:'}${callSessionId}`;
   return [peerA, peerB].sort().join(':');
+}
+
+export function isPersistentConversationId(conversationId: string) {
+  return conversationId.startsWith(PERSISTENT_CONVERSATION_PREFIX);
 }
 
 export function trimMessagesForStorage(messages: ChatMessage[]) {
@@ -80,26 +90,98 @@ export function trimMessagesForStorage(messages: ChatMessage[]) {
   return trimmed;
 }
 
-export function loadChatMessages(_conversationId: string): ChatMessage[] {
-  void _conversationId;
-  return [];
+const getStorageKey = (prefix: string, conversationId: string) =>
+  `${prefix}:${encodeURIComponent(conversationId)}`;
+
+const isStoredChatMessage = (value: unknown): value is ChatMessage => {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === 'string' && record.id.length > 0 && record.id.length <= 128 &&
+    typeof record.conversationId === 'string' && isPersistentConversationId(record.conversationId) &&
+    (record.direction === 'in' || record.direction === 'out') &&
+    (record.kind === 'text' || record.kind === 'image' || record.kind === 'file' || record.kind === 'mixed') &&
+    typeof record.createdAt === 'number' && Number.isSafeInteger(record.createdAt) && record.createdAt >= 0 &&
+    (record.status === 'sending' || record.status === 'sent' || record.status === 'received' || record.status === 'failed')
+  );
+};
+
+const prepareMessageForStorage = (message: ChatMessage): ChatMessage => {
+  const file = message.file
+    ? {
+        mimeType: message.file.mimeType,
+        name: message.file.name,
+        size: message.file.size,
+      }
+    : undefined;
+  const activeFileTransfer = message.fileTransfer && ['waiting', 'offered', 'transferring', 'ready'].includes(message.fileTransfer.status);
+
+  return {
+    ...message,
+    ...(file ? { file } : { file: undefined }),
+    ...(message.fileTransfer
+      ? {
+          fileTransfer: activeFileTransfer
+            ? {
+                ...message.fileTransfer,
+                status: 'failed',
+                error: '应用已重启，请重新发送文件',
+                bytesPerSecond: undefined,
+              }
+            : { ...message.fileTransfer, bytesPerSecond: undefined },
+        }
+      : {}),
+  };
+};
+
+export function loadChatMessages(conversationId: string): ChatMessage[] {
+  if (!isPersistentConversationId(conversationId) || typeof localStorage === 'undefined') return [];
+
+  try {
+    const raw = localStorage.getItem(getStorageKey(CHAT_STORAGE_PREFIX, conversationId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { version?: unknown; messages?: unknown };
+    if (parsed.version !== CHAT_STORAGE_VERSION || !Array.isArray(parsed.messages)) return [];
+    return trimMessagesForStorage(parsed.messages.filter(isStoredChatMessage));
+  } catch {
+    return [];
+  }
 }
 
-export function saveChatMessages(_conversationId: string, _messages: ChatMessage[]) {
-  void _conversationId;
-  void _messages;
-  // Chat content is intentionally memory-only for privacy.
+export function saveChatMessages(conversationId: string, messages: ChatMessage[]) {
+  if (!isPersistentConversationId(conversationId) || typeof localStorage === 'undefined') return;
+  try {
+    const prepared = trimMessagesForStorage(messages.map(prepareMessageForStorage));
+    localStorage.setItem(
+      getStorageKey(CHAT_STORAGE_PREFIX, conversationId),
+      JSON.stringify({ version: CHAT_STORAGE_VERSION, messages: prepared })
+    );
+  } catch {
+    // Persistence is best-effort when the browser quota or privacy mode blocks writes.
+  }
 }
 
-export function loadChatDraft(_conversationId: string) {
-  void _conversationId;
-  return '';
+export function loadChatDraft(conversationId: string) {
+  if (!isPersistentConversationId(conversationId) || typeof localStorage === 'undefined') return '';
+  try {
+    return localStorage.getItem(getStorageKey(DRAFT_STORAGE_PREFIX, conversationId)) ?? '';
+  } catch {
+    return '';
+  }
 }
 
-export function saveChatDraft(_conversationId: string, _draftText: string) {
-  void _conversationId;
-  void _draftText;
-  // Drafts are intentionally memory-only for privacy.
+export function saveChatDraft(conversationId: string, draftText: string) {
+  if (!isPersistentConversationId(conversationId) || typeof localStorage === 'undefined') return;
+  try {
+    const key = getStorageKey(DRAFT_STORAGE_PREFIX, conversationId);
+    if (draftText) {
+      localStorage.setItem(key, draftText);
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Persistence is best-effort when the browser quota or privacy mode blocks writes.
+  }
 }
 
 export function purgePersistedChatStorage() {

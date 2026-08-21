@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { Capacitor } from '@capacitor/core';
 import Peer, { type MediaConnection, type DataConnection } from 'peerjs';
 import { preferVideoCodecsInSdp } from '../lib/videoCodecPreference';
 import {
@@ -20,6 +21,7 @@ import {
   type DataConnectionChannel,
 } from '../lib/dataConnectionPayload';
 import type { CallSessionRole } from '../lib/callSession';
+import { resolvePublicAppBaseUrl, resolveTurnCredentialsEndpoint } from '../lib/runtimeUrls';
 
 interface PeerState {
   peer: Peer | null;
@@ -44,15 +46,29 @@ export interface PeerConnectionMetadata {
   channel?: DataConnectionChannel;
 }
 
-const getIceConfigEnvironment = (): IceConfigEnvironment => ({
-  VITE_TURN_URLS: import.meta.env.VITE_TURN_URLS,
-  VITE_TURN_USERNAME: import.meta.env.VITE_TURN_USERNAME,
-  VITE_TURN_CREDENTIAL: import.meta.env.VITE_TURN_CREDENTIAL,
-  VITE_TURN_MODE: import.meta.env.VITE_TURN_MODE,
-  VITE_TURN_CREDENTIALS_URL: import.meta.env.VITE_TURN_CREDENTIALS_URL,
-});
+const getIceConfigEnvironment = (): IceConfigEnvironment => {
+  const isNative = Capacitor.isNativePlatform();
+  const publicAppBaseUrl = resolvePublicAppBaseUrl({
+    configuredUrl: import.meta.env.VITE_PUBLIC_APP_URL,
+    isNative,
+    origin: window.location.origin,
+    basePath: import.meta.env.BASE_URL,
+  });
 
-export function usePeer() {
+  return {
+    VITE_TURN_URLS: import.meta.env.VITE_TURN_URLS,
+    VITE_TURN_USERNAME: import.meta.env.VITE_TURN_USERNAME,
+    VITE_TURN_CREDENTIAL: import.meta.env.VITE_TURN_CREDENTIAL,
+    VITE_TURN_MODE: import.meta.env.VITE_TURN_MODE,
+    VITE_TURN_CREDENTIALS_URL: resolveTurnCredentialsEndpoint({
+      configuredEndpoint: import.meta.env.VITE_TURN_CREDENTIALS_URL,
+      isNative,
+      publicAppBaseUrl,
+    }),
+  };
+};
+
+export function usePeer(preferredPeerId?: string) {
   const staticIceConfigEnvironmentRef = useRef<IceConfigEnvironment>(getIceConfigEnvironment());
   const iceConfigEnvironmentRef = useRef<IceConfigEnvironment>(staticIceConfigEnvironmentRef.current);
   const [state, setState] = useState<PeerState>({
@@ -151,9 +167,12 @@ export function usePeer() {
         }));
       }
 
-      const peer = new Peer(undefined, {
+      const peerOptions = {
         config: buildPeerRtcConfigForMode(iceConfigEnvironmentRef.current, turnModeRef.current),
-      });
+      };
+      const peer = preferredPeerId
+        ? new Peer(preferredPeerId, peerOptions)
+        : new Peer(peerOptions);
       peerRef.current = peer;
 
       peer.on('open', (id) => {
@@ -186,7 +205,7 @@ export function usePeer() {
       peerRef.current?.destroy();
       peerRef.current = null;
     };
-  }, []);
+  }, [preferredPeerId]);
 
   const enableTurnFallback = useCallback(() => {
     if (!hasConfiguredTurnServers(iceConfigEnvironmentRef.current) || turnModeRef.current !== 'off') return false;

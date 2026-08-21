@@ -89,4 +89,42 @@ describe('chatCrypto', () => {
     expect(isEncryptedBinaryChatEnvelope(peerJsDecodedEnvelope)).toBe(true);
     await expect(bob.decryptBytes(peerJsDecodedEnvelope)).resolves.toEqual(plaintext);
   });
+
+  it('authenticates persistent device handshakes with the pairing secret', async () => {
+    const sharedSecret = 'pairing-secret-that-is-long-enough-123456';
+    const alice = await createChatCryptoSession({
+      context: 'device-session',
+      localPeerId: 'svc-alice',
+      remotePeerId: 'svc-bob',
+      sharedSecret,
+    });
+    const bob = await createChatCryptoSession({
+      context: 'device-session',
+      localPeerId: 'svc-bob',
+      remotePeerId: 'svc-alice',
+      sharedSecret,
+    });
+
+    await alice.acceptPeerKeyMessage(bob.keyMessage);
+    await bob.acceptPeerKeyMessage(alice.keyMessage);
+    const envelope = await alice.encrypt({ text: 'paired' });
+    await expect(bob.decrypt(envelope)).resolves.toEqual({ text: 'paired' });
+  });
+
+  it('rejects a persistent device handshake signed with another secret', async () => {
+    const alice = await createChatCryptoSession({
+      context: 'device-session',
+      localPeerId: 'svc-alice',
+      remotePeerId: 'svc-bob',
+      sharedSecret: 'pairing-secret-that-is-long-enough-123456',
+    });
+    const attacker = await createChatCryptoSession({
+      context: 'device-session',
+      localPeerId: 'svc-bob',
+      remotePeerId: 'svc-alice',
+      sharedSecret: 'different-secret-that-is-long-enough-654321',
+    });
+
+    await expect(alice.acceptPeerKeyMessage(attacker.keyMessage)).rejects.toThrow('pairing authentication');
+  });
 });

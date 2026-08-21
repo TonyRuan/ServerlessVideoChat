@@ -72,7 +72,7 @@ export function CallControls({
           variant={unreadCount > 0 ? 'primary' : 'secondary'}
           size="icon"
           className={cn(
-            'absolute bottom-[calc(7rem+env(safe-area-inset-bottom))] right-4 z-50 h-12 w-12 rounded-full text-white shadow-2xl ring-1 ring-gray-700 backdrop-blur-sm transition-all duration-300 ease-in-out md:hidden',
+            'absolute bottom-[calc(7rem+var(--svc-safe-area-bottom))] right-[calc(1rem+var(--svc-safe-area-right))] z-50 h-12 w-12 rounded-full text-white shadow-2xl ring-1 ring-gray-700 backdrop-blur-sm transition-all duration-300 ease-in-out md:hidden',
             unreadCount > 0 ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-800/90 hover:bg-gray-700',
             visible || unreadCount > 0 ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           )}
@@ -166,7 +166,7 @@ export function CallControls({
         {...hiddenProps}
         aria-hidden={!visible}
         className={cn(
-          'absolute bottom-[calc(1.25rem+env(safe-area-inset-bottom))] left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-gray-700 bg-gray-800/90 px-3 py-3 shadow-2xl backdrop-blur-sm transition-all duration-300 ease-in-out md:hidden',
+          'absolute bottom-[calc(1.25rem+var(--svc-safe-area-bottom))] left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-gray-700 bg-gray-800/90 px-3 py-3 shadow-2xl backdrop-blur-sm transition-all duration-300 ease-in-out md:hidden',
           visible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0 pointer-events-none'
         )}
       >

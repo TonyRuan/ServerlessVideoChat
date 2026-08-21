@@ -9,6 +9,8 @@ npm run lint
 npm run build
 ```
 
+For Android-affecting changes, also follow `docs/maintenance/android.md`: sync the Capacitor project, build `assembleDebug`, install it on an adb target, verify pairing and restart persistence from fresh UI hierarchy dumps, and inspect the crash buffer.
+
 `npm run build` runs `scripts/bumpPatchVersionIfChanged.mjs` first. If source changes are present and the package version still matches `HEAD`, this may bump the patch version in `package.json` and `package-lock.json`.
 
 ## Focused Tests
@@ -33,6 +35,8 @@ npm test -- src/lib/fileTransferFlow.test.ts
 npm test -- src/lib/realtimeProtocol.test.ts
 npm test -- src/components/CallControls.test.tsx
 npm test -- src/components/ChatPanel.test.tsx
+npm test -- src/lib/devicePairing.test.ts
+npm test -- src/lib/runtimeUrls.test.ts
 ```
 
 ## Test Style

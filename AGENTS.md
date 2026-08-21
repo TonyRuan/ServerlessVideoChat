@@ -11,13 +11,14 @@ Read these before changing code, running builds, or deploying:
 - `docs/maintenance/webrtc.md`: PeerJS, WebRTC, STUN/TURN, fallback, diagnostics.
 - `docs/maintenance/testing.md`: required checks and focused test commands.
 - `docs/maintenance/deployment.md`: Cloudflare Pages and GitHub Pages deployment.
+- `docs/maintenance/android.md`: Capacitor app scope, Android toolchain, build, and emulator QA.
 - `docs/maintenance/git.md`: local git workflow and safe staging.
 
 `.codex/PROJECT_CONTEXT.md` is a concise Codex context index. If project behavior changes, update the relevant `docs/maintenance/*` file first, then keep `.codex/PROJECT_CONTEXT.md` aligned.
 
 ## Project Snapshot
 
-ServerlessVideoChat is a P2P video chat app built with React 18, TypeScript, Vite, PeerJS, WebRTC, Tailwind CSS, Zustand, and React Router. Cloudflare Pages serves the static SPA and an optional same-origin Function issues short-lived TURN credentials; media never passes through the Function.
+ServerlessVideoChat is a P2P video chat app built with React 18, TypeScript, Vite, PeerJS, WebRTC, Tailwind CSS, Zustand, React Router, and a Capacitor Android wrapper. Cloudflare Pages serves the SPA and a credential Function; media and chat content never pass through the Function.
 
 Primary routes:
 

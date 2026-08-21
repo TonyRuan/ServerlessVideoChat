@@ -16,6 +16,7 @@
 - `/`: home page with optional local preview, create meeting, and join meeting.
 - `/call#session=<id>&role=host`: host waiting page.
 - `/call/:remotePeerId#session=<id>&role=guest`: guest joins a specific Peer ID.
+- Device sessions reuse `/call` with `mode=device` and an authenticated pairing secret in the URL hash. Pair metadata is then stored locally for future direct opening.
 
 Session state lives in the URL hash. Do not move meeting recovery state to long-term browser storage without an explicit privacy/product decision.
 
@@ -30,7 +31,7 @@ Home does not request camera or microphone permission on page load. Its media bu
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.
 - Session-level initial media defaults for video, voice-only, and text-only meetings; disabled hardware is requested only when a participant later enables it.
-- Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. File transfer uses receiver-issued credit, reconnect resume, and a receiver completion acknowledgement; capable browsers save directly to disk, otherwise completed files become download cards. Chat is not persisted to local storage.
+- Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. Regular meetings remain memory-only. Explicitly paired device sessions persist their capped text/image history and drafts locally, queue offline text/images, and authenticate key exchange with the pairing secret.
 - Double-click dog emoji reactions.
 - Compact diagnostics panel with expandable full debug details.
 - Invite link with QR code for phone join flow.
@@ -45,6 +46,8 @@ Home does not request camera or microphone permission on page load. Its media bu
 - `src/lib/mediaDevicePolicy.ts`: selective device constraints and hardware-free placeholder tracks for initially disabled media.
 - `src/hooks/useAutoHideControls.ts`: call-control visibility and activity timeout behavior.
 - `src/lib/callSession.ts`: session parsing, link creation, hash updates.
+- `src/lib/devicePairing.ts`: stable device identity, pairing secret, and paired-device records.
+- `src/lib/runtimeUrls.ts`: hosted invite and native TURN endpoint resolution.
 - `src/lib/fileTransferBinary.ts`: binary file frame encoding and validation.
 - `src/lib/fileTransferFlow.ts`: receiver credit, sender window, ACK, and resume helpers.
 - `src/lib/realtimeProtocol.ts`: strict validation for quality and reaction payloads.
@@ -65,10 +68,11 @@ Home does not request camera or microphone permission on page load. Its media bu
 - Static TURN credentials injected through `VITE_*` remain visible in frontend build output and are only a fallback. Production should use the Pages Function and remove static credentials after coturn migration is verified.
 - Dynamic TURN issuance depends on Cloudflare Pages bindings and matching coturn shared-secret configuration; migrate both sides in one controlled window.
 - WebRTC connection success still depends on browser, network, NAT, firewall, TURN reachability, and media permission.
-- Chat contents and drafts are memory-only by design; refresh or close clears them.
+- Regular meeting chat remains memory-only. Paired-device text/image history is deliberately local and is lost when site/app storage is cleared; file bytes and file handles are never persisted.
 - Invite URLs are bearer capabilities and do not independently verify the other participant's identity.
 - Non-image files are capped at 2GiB, but unsupported browsers still cap the memory-backed download fallback at 10MiB.
 - Browser UI validation may stop at a permission-denied screen unless fake media devices or explicit user permission are available.
+- Android v1 reconnects only while its screen is active; it has no push notifications, cloud queue, or background service.
 
 ## Documentation Maintenance
 

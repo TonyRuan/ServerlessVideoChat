@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly VITE_TURN_CREDENTIAL?: string;
   readonly VITE_TURN_MODE?: string;
   readonly VITE_TURN_CREDENTIALS_URL?: string;
+  readonly VITE_PUBLIC_APP_URL?: string;
 }
 
 interface ImportMeta {

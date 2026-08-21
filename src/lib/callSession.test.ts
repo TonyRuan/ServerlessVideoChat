@@ -60,6 +60,29 @@ describe('callSession', () => {
     )).toBe('https://chat.example.com/call/host-peer#session=session-1&role=guest&video=0');
   });
 
+  it('round trips authenticated persistent device invitations', () => {
+    const pairingSecret = 'pairing-secret-that-is-long-enough-123456';
+    const link = buildInviteLink(
+      'https://chat.example.com/',
+      'svc-host',
+      'device-session',
+      { audioEnabled: false, videoEnabled: false },
+      'device',
+      pairingSecret
+    );
+
+    expect(link).toBe(
+      `https://chat.example.com/call/svc-host#session=device-session&role=guest&mode=device&pair=${pairingSecret}&audio=0&video=0`
+    );
+    expect(parseInviteInput(link)).toEqual({
+      peerId: 'svc-host',
+      sessionId: 'device-session',
+      mode: 'device',
+      pairingSecret,
+      mediaDefaults: { audioEnabled: false, videoEnabled: false },
+    });
+  });
+
   it('rejects missing session or invalid peer ids', () => {
     expect(parseCallSessionHash('#role=host&peer=peer-1')).toBeNull();
     expect(parseCallSessionHash('#session=session-1&role=host&peer=http://bad')).toEqual({

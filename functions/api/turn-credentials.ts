@@ -20,6 +20,7 @@ const DEFAULT_TTL_SECONDS = 1200;
 const MIN_TTL_SECONDS = 300;
 const MAX_TTL_SECONDS = 3600;
 const NO_STORE_CACHE_CONTROL = 'no-store';
+const TRUSTED_NATIVE_ORIGINS = new Set(['https://localhost', 'capacitor://localhost']);
 
 export const onRequest: PagesFunction<TurnCredentialEnv> = ({ request, env }) =>
   handleTurnCredentialsRequest(request, env);
@@ -29,22 +30,27 @@ export async function handleTurnCredentialsRequest(
   env: TurnCredentialEnv,
   options: TurnCredentialOptions = {}
 ): Promise<Response> {
+  const originHeader = request.headers.get('origin');
+  const corsHeaders = originHeader && TRUSTED_NATIVE_ORIGINS.has(originHeader)
+    ? { 'Access-Control-Allow-Origin': originHeader, Vary: 'Origin' }
+    : {};
+
   if (request.method !== 'GET') {
     return jsonResponse({ error: 'method_not_allowed' }, 405, {
       Allow: 'GET',
+      ...corsHeaders,
     });
   }
 
   const requestOrigin = new URL(request.url).origin;
-  const originHeader = request.headers.get('origin');
-  if (originHeader && originHeader !== requestOrigin) {
+  if (originHeader && originHeader !== requestOrigin && !TRUSTED_NATIVE_ORIGINS.has(originHeader)) {
     return jsonResponse({ error: 'forbidden' }, 403);
   }
 
   const secret = env.TURN_SHARED_SECRET?.trim() ?? '';
   const urls = parseTurnUrls(env.TURN_URLS);
   if (!secret || urls.length === 0) {
-    return jsonResponse({ error: 'turn_unavailable' }, 503);
+    return jsonResponse({ error: 'turn_unavailable' }, 503, corsHeaders);
   }
 
   const ttlSeconds = resolveTtlSeconds(env.TURN_CREDENTIAL_TTL_SECONDS);
@@ -61,7 +67,8 @@ export async function handleTurnCredentialsRequest(
       credential,
       expiresAt: expiresAtSeconds * 1000,
     },
-    200
+    200,
+    corsHeaders
   );
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "trae-project",
   "private": true,
-  "version": "0.0.9",
+  "version": "0.0.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,10 +14,16 @@
     "preview": "vite preview",
     "check": "tsc -b --noEmit",
     "test": "vitest run",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android",
     "predeploy": "npm run build:github",
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/barcode-scanner": "^3.1.1",
+    "@capacitor/core": "^8.5.0",
     "@types/peerjs": "^0.0.30",
     "clsx": "^2.1.1",
     "lucide-react": "^0.511.0",
@@ -25,11 +31,12 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^7.18.1",
+    "react-router-dom": "^7.18.2",
     "tailwind-merge": "^3.0.2",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@eslint/js": "^9.25.0",
     "@types/node": "^22.15.30",
     "@types/react": "^18.3.12",
