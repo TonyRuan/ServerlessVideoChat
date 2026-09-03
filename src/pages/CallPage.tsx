@@ -3,11 +3,12 @@ import { Capacitor } from '@capacitor/core';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Loader2, Volume2, VolumeX } from 'lucide-react';
 import type { MediaConnection, DataConnection } from 'peerjs';
-import { Button } from '../components/Button';
 import type { VideoFitMode } from '../components/SettingsMenu';
 import { CallControls } from '../components/CallControls';
 import { ChatPanel } from '../components/ChatPanel';
 import { InviteLinkCard } from '../components/InviteLinkCard';
+import { CallIssuePanel } from '../components/CallIssuePanel';
+import { ConnectionStatusNotice } from '../components/ConnectionStatusNotice';
 import {
   NetworkDiagnosticsPanel,
   type TransportDiagnosticSnapshot,
@@ -126,12 +127,14 @@ import { cn } from '../lib/utils';
 import { isHeartPayload, isQualityChangePayload } from '../lib/realtimeProtocol';
 import { watchPeerTransport } from '../lib/transportWatchdog';
 import {
+  getPairedDeviceDisplayName,
   loadOrCreateDeviceIdentity,
   loadPairedDevices,
   savePairedDevice,
   updatePairedDeviceRemote,
 } from '../lib/devicePairing';
 import { createNativeReceivedFileWritable } from '../lib/nativeFileSave';
+import { describeMediaError } from '../lib/mediaErrorPolicy';
 
 const FILE_TRANSFER_BUFFER_POLL_MS = 20;
 const EMPTY_TRANSPORT_DIAGNOSTIC: TransportDiagnosticSnapshot = {
@@ -276,7 +279,9 @@ export default function CallPage() {
   const {
     myId,
     isPeerReady,
-    error: peerError,
+    status: peerStatus,
+    issue: peerIssue,
+    connectionIssue: peerConnectionIssue,
     callPeer,
     connectToPeer,
     onIncomingCall,
@@ -286,7 +291,14 @@ export default function CallPage() {
     applyTurnMode,
     turnCredentialSource,
     turnCredentialExpiresAt,
-  } = usePeer(isPersistentDeviceSession ? deviceIdentity.peerId : undefined);
+    retryPeer,
+  } = usePeer(
+    isPersistentDeviceSession ? deviceIdentity.peerId : undefined,
+    {
+      persistentRecovery: isPersistentDeviceSession,
+      allowIdentityReplacement: callSession.role === 'guest' && !isPersistentDeviceSession,
+    }
+  );
   const initialAudioEnabled = callSession.mediaDefaults.audioEnabled;
   const initialVideoEnabled = callSession.mediaDefaults.videoEnabled;
 
@@ -328,9 +340,9 @@ export default function CallPage() {
   );
   const [turnFallbackStatus, setTurnFallbackStatus] = useState<TurnFallbackStatus>('idle');
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
-  const [, setMediaReconnectCount] = useState(0);
   const [dataReconnectAttempt, setDataReconnectAttempt] = useState(0);
-  const [, setDataReconnectCount] = useState(0);
+  const [mediaRecoveryExhausted, setMediaRecoveryExhausted] = useState(false);
+  const [dataRecoveryExhausted, setDataRecoveryExhausted] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -356,6 +368,8 @@ export default function CallPage() {
   const transportRecoveryDeadlineRef = useRef<number | null>(null);
   const beginMediaRecoveryRef = useRef<() => void>(() => undefined);
   const mediaRecoveryAttemptsRef = useRef(0);
+  const mediaReconnectCountRef = useRef(0);
+  const dataReconnectCountRef = useRef(0);
   const reconnectEnabledRef = useRef(true);
   const dataMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
   const bulkMessageQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1103,22 +1117,22 @@ export default function CallPage() {
       remotePeerId,
     })) return;
 
-    setDataReconnectCount((count) => {
-      const delayMs = reconnectDelayMs(
-        callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
-      );
-      if (delayMs === null) return count;
+    const count = dataReconnectCountRef.current;
+    const delayMs = reconnectDelayMs(
+      callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
+    );
+    if (delayMs === null) {
+      setDataRecoveryExhausted(true);
+      return;
+    }
+    dataReconnectCountRef.current = count + 1;
+    setDataRecoveryExhausted(false);
 
-      if (dataReconnectTimerRef.current) {
-        clearTimeout(dataReconnectTimerRef.current);
-      }
-      dataReconnectTimerRef.current = setTimeout(() => {
-        dataReconnectTimerRef.current = null;
-        setDataReconnectAttempt((attempt) => attempt + 1);
-      }, delayMs);
-
-      return count + 1;
-    });
+    if (dataReconnectTimerRef.current) clearTimeout(dataReconnectTimerRef.current);
+    dataReconnectTimerRef.current = setTimeout(() => {
+      dataReconnectTimerRef.current = null;
+      setDataReconnectAttempt((attempt) => attempt + 1);
+    }, delayMs);
   }, [remotePeerId]);
 
   const scheduleMediaReconnect = useCallback(() => {
@@ -1127,22 +1141,23 @@ export default function CallPage() {
       remotePeerId,
     })) return;
 
-    setMediaReconnectCount((count) => {
-      const delayMs = reconnectDelayMs(
-        callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
-      );
-      if (delayMs === null) return count;
+    const count = mediaReconnectCountRef.current;
+    const delayMs = reconnectDelayMs(
+      callSessionRef.current.mode === 'device' ? Math.min(count, 5) : count
+    );
+    if (delayMs === null) {
+      setMediaRecoveryExhausted(true);
+      setTurnFallbackStatus('exhausted');
+      return;
+    }
+    mediaReconnectCountRef.current = count + 1;
+    setMediaRecoveryExhausted(false);
 
-      if (mediaReconnectTimerRef.current) {
-        clearTimeout(mediaReconnectTimerRef.current);
-      }
-      mediaReconnectTimerRef.current = setTimeout(() => {
-        mediaReconnectTimerRef.current = null;
-        setReconnectAttempt((attempt) => attempt + 1);
-      }, delayMs);
-
-      return count + 1;
-    });
+    if (mediaReconnectTimerRef.current) clearTimeout(mediaReconnectTimerRef.current);
+    mediaReconnectTimerRef.current = setTimeout(() => {
+      mediaReconnectTimerRef.current = null;
+      setReconnectAttempt((attempt) => attempt + 1);
+    }, delayMs);
   }, [remotePeerId]);
 
   const resetConnectionStats = useCallback(() => {
@@ -1210,7 +1225,8 @@ export default function CallPage() {
     const handleOpen = () => {
       if (connectionGenerationRef.current !== generation || !isCurrentConnection(dataConnRef.current, conn)) return;
       setIsDataConnected(true);
-      setDataReconnectCount(0);
+      dataReconnectCountRef.current = 0;
+      setDataRecoveryExhausted(false);
       if (dataReconnectTimerRef.current) {
         clearTimeout(dataReconnectTimerRef.current);
         dataReconnectTimerRef.current = null;
@@ -1280,7 +1296,7 @@ export default function CallPage() {
 
     const handleOpen = () => {
       if (connectionGenerationRef.current !== generation || !isCurrentConnection(bulkDataConnRef.current, conn)) return;
-      setDataReconnectCount(0);
+      dataReconnectCountRef.current = 0;
       for (const [transferId, transfer] of outgoingFileTransfersRef.current) {
         if (transfer.window.nextOffset === transfer.window.acknowledgedOffset) {
           void startOutgoingFileTransfer(transferId);
@@ -1410,6 +1426,11 @@ export default function CallPage() {
   }, [applyTurnMode, closeActiveConnections, hasTurnConfig, scheduleMediaReconnect, turnMode]);
 
   beginMediaRecoveryRef.current = beginMediaRecovery;
+
+  useEffect(() => {
+    if (!peerConnectionIssue) return;
+    beginMediaRecoveryRef.current();
+  }, [peerConnectionIssue]);
 
   useEffect(() => {
     const pc = callRef.current?.peerConnection;
@@ -1638,7 +1659,8 @@ export default function CallPage() {
           setRemoteStream(remoteStream);
           setConnectionStatus('connected');
           mediaRecoveryAttemptsRef.current = 0;
-          setMediaReconnectCount(0);
+          mediaReconnectCountRef.current = 0;
+          setMediaRecoveryExhausted(false);
           if (mediaReconnectTimerRef.current) {
             clearTimeout(mediaReconnectTimerRef.current);
             mediaReconnectTimerRef.current = null;
@@ -1808,6 +1830,8 @@ export default function CallPage() {
       setRemoteStream(remoteStream);
       setConnectionStatus('connected');
       mediaRecoveryAttemptsRef.current = 0;
+      mediaReconnectCountRef.current = 0;
+      setMediaRecoveryExhausted(false);
     });
 
     incomingCall.on('close', () => {
@@ -2078,6 +2102,29 @@ export default function CallPage() {
     );
   })();
 
+  const retryConnectionsNow = () => {
+    mediaReconnectCountRef.current = 0;
+    dataReconnectCountRef.current = 0;
+    setMediaRecoveryExhausted(false);
+    setDataRecoveryExhausted(false);
+
+    if (!isPeerReady) {
+      retryPeer();
+      return;
+    }
+
+    if (callSessionRef.current.role !== 'guest' || !remotePeerId) {
+      setConnectionStatus('waiting');
+      return;
+    }
+
+    closeActiveConnections();
+    setTurnFallbackStatus('reconnecting');
+    setConnectionStatus('connecting');
+    setReconnectAttempt((attempt) => attempt + 1);
+    setDataReconnectAttempt((attempt) => attempt + 1);
+  };
+
   const endCall = () => {
     reconnectEnabledRef.current = false;
     if (mediaReconnectTimerRef.current) clearTimeout(mediaReconnectTimerRef.current);
@@ -2103,6 +2150,39 @@ export default function CallPage() {
   );
   const isRecoveringConnection = turnFallbackStatus !== 'idle' && turnFallbackStatus !== 'active';
   const displayedCallConnectionIssue = isRecoveringConnection ? null : callConnectionIssue;
+  const mediaErrorPresentation = streamError ? describeMediaError(streamError) : null;
+  const connectionNotice = (() => {
+    if (peerStatus === 'offline') {
+      return {
+        message: '当前设备处于离线状态，网络恢复后将自动重新连接。',
+      };
+    }
+    if (peerStatus === 'reconnecting') {
+      return {
+        message: remoteStream
+          ? '信令服务暂时断开，当前通话可能仍可继续，正在恢复连接。'
+          : (peerIssue?.message ?? '信令服务暂时断开，正在恢复连接。'),
+      };
+    }
+    if (peerStatus === 'retry-paused') {
+      return {
+        message: '信令服务仍不可用，自动重连已暂停。',
+        onRetry: retryPeer,
+      };
+    }
+    if (mediaRecoveryExhausted || dataRecoveryExhausted) {
+      return {
+        message: '本次通话仍未恢复，自动重连已暂停。',
+        onRetry: retryConnectionsNow,
+      };
+    }
+    if (streamError && stream && mediaErrorPresentation) {
+      return {
+        message: `${mediaErrorPresentation.title}：${mediaErrorPresentation.message} 请再次使用对应的媒体控制重试。`,
+      };
+    }
+    return null;
+  })();
   const transportFailureHint = (() => {
     if (rtcIceState !== 'failed' || turnFallbackStatus !== 'idle') return '';
     if (!hasTurnConfig) {
@@ -2118,21 +2198,55 @@ export default function CallPage() {
   })();
   const controlsVisible = showControls || isChatOpen || isMobileMoreOpen;
 
-  if (streamError || peerError) {
+  if (peerStatus === 'fatal' || peerStatus === 'blocked') {
     return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <p className="text-red-500 text-xl">连接服务发生错误</p>
-          <p className="text-gray-400">可能是网络问题或服务暂时不可用。</p>
-          <p className="text-sm text-gray-500">{streamError?.message || peerError?.message}</p>
-          <Button onClick={() => navigate('/')}>返回首页</Button>
-        </div>
-      </div>
+      <CallIssuePanel
+        title={peerStatus === 'blocked' ? '连接身份被占用' : '连接服务无法启动'}
+        message={peerIssue?.message ?? '连接服务发生了无法自动恢复的错误。'}
+        detail={peerIssue ? `${peerIssue.type}: ${peerIssue.detail}` : undefined}
+        primaryAction={peerStatus === 'blocked'
+          ? { label: '重新尝试', onClick: retryPeer }
+          : { label: '返回首页', onClick: () => navigate('/') }}
+        secondaryAction={peerStatus === 'blocked'
+          ? { label: '返回首页', onClick: () => navigate('/') }
+          : undefined}
+      />
+    );
+  }
+
+  if (streamError && !stream && mediaErrorPresentation) {
+    return (
+      <CallIssuePanel
+        title={mediaErrorPresentation.title}
+        message={mediaErrorPresentation.message}
+        detail={streamError.message}
+        primaryAction={{
+          label: '重试设备',
+          onClick: () => void initializeStream(undefined, {
+            audioEnabled: initialAudioEnabled,
+            videoEnabled: initialVideoEnabled,
+          }),
+        }}
+        secondaryAction={{
+          label: '关闭音视频继续',
+          onClick: () => void initializeStream(undefined, {
+            audioEnabled: false,
+            videoEnabled: false,
+          }),
+        }}
+        tertiaryAction={{ label: '返回首页', onClick: () => navigate('/') }}
+      />
     );
   }
 
   return (
     <div className="min-h-screen bg-gray-900 text-white overflow-hidden relative">
+      {connectionNotice ? (
+        <ConnectionStatusNotice
+          message={connectionNotice.message}
+          onRetry={connectionNotice.onRetry}
+        />
+      ) : null}
       {/* Remote Video (Full Screen) */}
       <div className="absolute inset-0 flex items-center justify-center">
         {remoteStream ? (
@@ -2225,7 +2339,7 @@ export default function CallPage() {
         isSecure={isChatSecure}
         connectionIssue={displayedCallConnectionIssue}
         isPersistent={isPersistentDeviceSession}
-        peerLabel={pairedDevice?.remoteName}
+        peerLabel={pairedDevice ? getPairedDeviceDisplayName(pairedDevice) : undefined}
         onClose={() => setIsChatOpen(false)}
         onSend={handleSendChat}
         onAcceptFileTransfer={handleAcceptFileTransfer}
@@ -2381,6 +2495,8 @@ export default function CallPage() {
         credentialExpiresAt={turnCredentialExpiresAt}
         turnFallbackStatus={turnFallbackStatus}
         remotePlayError={remotePlayError}
+        peerStatus={peerStatus}
+        peerIssueType={peerIssue?.type}
       />
     </div>
   );

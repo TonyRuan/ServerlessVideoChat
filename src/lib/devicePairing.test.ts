@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEVICE_IDENTITY_STORAGE_KEY,
   PAIRED_DEVICES_STORAGE_KEY,
+  getPairedDeviceDisplayName,
   loadOrCreateDeviceIdentity,
   loadPairedDevices,
   removePairedDevice,
   savePairedDevice,
+  updatePairedDeviceName,
   updatePairedDeviceRemote,
 } from './devicePairing';
 
@@ -79,5 +81,39 @@ describe('devicePairing', () => {
   it('ignores malformed persisted state', () => {
     localStorage.setItem(PAIRED_DEVICES_STORAGE_KEY, '{broken');
     expect(loadPairedDevices()).toEqual([]);
+  });
+
+  it('persists a local display name without losing the reported remote name', () => {
+    savePairedDevice({
+      sessionId: 'session-one',
+      pairingSecret: 'pairing-secret-that-is-long-enough-111111',
+      role: 'host',
+      localPeerId: 'svc-local',
+      remotePeerId: 'svc-phone',
+      remoteName: '我的手机',
+      createdAt: 100,
+      lastOpenedAt: 100,
+    });
+
+    const renamed = updatePairedDeviceName({ sessionId: 'session-one', name: '  客厅平板  ' });
+    expect(renamed).toMatchObject({ remoteName: '我的手机', customName: '客厅平板' });
+    expect(getPairedDeviceDisplayName(loadPairedDevices()[0])).toBe('客厅平板');
+
+    updatePairedDeviceRemote({
+      sessionId: 'session-one',
+      remotePeerId: 'svc-phone-new',
+      remoteName: '对方手机',
+    });
+    const refreshed = loadPairedDevices()[0];
+    expect(refreshed).toMatchObject({ remoteName: '对方手机', customName: '客厅平板' });
+    expect(getPairedDeviceDisplayName(refreshed)).toBe('客厅平板');
+
+    const sessionRefresh = { ...refreshed };
+    delete sessionRefresh.customName;
+    savePairedDevice({ ...sessionRefresh, lastOpenedAt: 5678 });
+    expect(loadPairedDevices()[0]).toMatchObject({ customName: '客厅平板', lastOpenedAt: 5678 });
+
+    expect(updatePairedDeviceName({ sessionId: 'session-one', name: '   ' })).toBeNull();
+    expect(getPairedDeviceDisplayName(loadPairedDevices()[0])).toBe('客厅平板');
   });
 });

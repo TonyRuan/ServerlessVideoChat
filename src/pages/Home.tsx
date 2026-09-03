@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Video, Mic, MicOff, VideoOff, Laptop, Link2, QrCode, Smartphone, Trash2 } from 'lucide-react';
+import { Check, Laptop, Link2, Mic, MicOff, Pencil, QrCode, Smartphone, Trash2, Video, VideoOff, X } from 'lucide-react';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { SettingsMenu, type VideoFitMode } from '../components/SettingsMenu';
@@ -9,11 +9,14 @@ import { buildCallSessionHash, createCallSessionId, parseInviteInput } from '../
 import { BUILD_INFO } from '../lib/buildInfo';
 import {
   createPairingSecret,
+  getPairedDeviceDisplayName,
   loadOrCreateDeviceIdentity,
   loadPairedDevices,
+  MAX_DEVICE_NAME_LENGTH,
   removePairedDevice,
   savePairedDevice,
   type PairedDeviceSession,
+  updatePairedDeviceName,
 } from '../lib/devicePairing';
 import logoUrl from '../assets/serverless-video-chat-logo.png';
 
@@ -37,6 +40,9 @@ export default function Home() {
   const [videoFitMode, setVideoFitMode] = useState<VideoFitMode>('cover');
   const [deviceIdentity] = useState(loadOrCreateDeviceIdentity);
   const [pairedDevices, setPairedDevices] = useState(loadPairedDevices);
+  const [editingDeviceId, setEditingDeviceId] = useState<string | null>(null);
+  const [deviceNameDraft, setDeviceNameDraft] = useState('');
+  const [deviceNameError, setDeviceNameError] = useState('');
   const videoRef = React.useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -92,6 +98,35 @@ export default function Home() {
       pairingSecret: device.pairingSecret,
       mediaDefaults: { audioEnabled: false, videoEnabled: false },
     })}`);
+  };
+
+  const startDeviceRename = (device: PairedDeviceSession) => {
+    setEditingDeviceId(device.sessionId);
+    setDeviceNameDraft(getPairedDeviceDisplayName(device));
+    setDeviceNameError('');
+  };
+
+  const cancelDeviceRename = () => {
+    setEditingDeviceId(null);
+    setDeviceNameDraft('');
+    setDeviceNameError('');
+  };
+
+  const saveDeviceName = (event: React.FormEvent, device: PairedDeviceSession) => {
+    event.preventDefault();
+    const updated = updatePairedDeviceName({
+      sessionId: device.sessionId,
+      name: deviceNameDraft,
+    });
+    if (!updated) {
+      setDeviceNameError(`请输入 1-${MAX_DEVICE_NAME_LENGTH} 个字符的设备名称`);
+      return;
+    }
+
+    setPairedDevices((current) => current.map((item) => (
+      item.sessionId === updated.sessionId ? updated : item
+    )));
+    cancelDeviceRename();
   };
 
   const handleStartPreview = () => {
@@ -205,32 +240,91 @@ export default function Home() {
                 <p className="mt-2 text-sm text-gray-300">还没有已配对设备</p>
                 <p className="mt-1 text-xs text-gray-500">电脑创建二维码，手机粘贴或扫描配对链接</p>
               </div>
-            ) : pairedDevices.map((device) => (
-              <div key={device.sessionId} className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/70 p-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
-                  {device.remoteName.includes('电脑') ? <Laptop className="h-5 w-5" /> : <Smartphone className="h-5 w-5" />}
+            ) : pairedDevices.map((device) => {
+              const displayName = getPairedDeviceDisplayName(device);
+              const isEditing = editingDeviceId === device.sessionId;
+              return (
+                <div key={device.sessionId} className="flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-900/70 p-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+                    {device.remoteName.includes('电脑') ? <Laptop className="h-5 w-5" /> : <Smartphone className="h-5 w-5" />}
+                  </div>
+                  {isEditing ? (
+                    <form className="flex min-w-0 flex-1 items-start gap-2" onSubmit={(event) => saveDeviceName(event, device)}>
+                      <Input
+                        autoFocus
+                        aria-label={`编辑设备名称 ${displayName}`}
+                        value={deviceNameDraft}
+                        maxLength={MAX_DEVICE_NAME_LENGTH}
+                        error={deviceNameError || undefined}
+                        className="h-9 border-gray-600 bg-gray-800 text-white"
+                        onChange={(event) => {
+                          setDeviceNameDraft(event.target.value);
+                          if (deviceNameError) setDeviceNameError('');
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            cancelDeviceRename();
+                          }
+                        }}
+                      />
+                      <Button
+                        type="submit"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 shrink-0 text-green-300 hover:bg-gray-800 hover:text-green-200"
+                        aria-label="保存设备名称"
+                        disabled={!deviceNameDraft.trim()}
+                      >
+                        <Check className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 shrink-0 text-gray-400 hover:bg-gray-800 hover:text-white"
+                        aria-label="取消编辑设备名称"
+                        onClick={cancelDeviceRename}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </form>
+                  ) : (
+                    <>
+                      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => openPairedDevice(device)}>
+                        <span className="block truncate text-sm font-medium text-white">{displayName}</span>
+                        <span className="block text-xs text-gray-500">
+                          {device.remotePeerId ? '已配对 · 打开后自动连接' : '等待另一台设备完成配对'}
+                        </span>
+                      </button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-gray-400 hover:bg-gray-800 hover:text-blue-300"
+                        aria-label={`编辑设备名称 ${displayName}`}
+                        onClick={() => startDeviceRename(device)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-gray-400 hover:bg-gray-800 hover:text-red-300"
+                        aria-label={`取消配对 ${displayName}`}
+                        onClick={() => {
+                          removePairedDevice(device.sessionId);
+                          setPairedDevices(loadPairedDevices());
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
                 </div>
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => openPairedDevice(device)}>
-                  <span className="block truncate text-sm font-medium text-white">{device.remoteName}</span>
-                  <span className="block text-xs text-gray-500">
-                    {device.remotePeerId ? '已配对 · 打开后自动连接' : '等待另一台设备完成配对'}
-                  </span>
-                </button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 text-gray-400 hover:bg-gray-800 hover:text-red-300"
-                  aria-label={`取消配对 ${device.remoteName}`}
-                  onClick={() => {
-                    removePairedDevice(device.sessionId);
-                    setPairedDevices(loadPairedDevices());
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 

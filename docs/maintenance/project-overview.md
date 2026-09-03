@@ -31,12 +31,13 @@ Home does not request camera or microphone permission on page load. Its media bu
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.
 - Session-level initial media defaults for video, voice-only, and text-only meetings; disabled hardware is requested only when a participant later enables it.
-- Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. Regular meetings remain memory-only. Explicitly paired device sessions persist their capped text/image history and drafts locally, queue offline text/images, and authenticate key exchange with the pairing secret.
+- Encrypted text/image chat plus confirmation-first file transfer over separate WebRTC control and bulk DataConnections. Regular meetings remain memory-only. Explicitly paired device sessions persist their capped text/image history, drafts, and local custom device names, queue offline text/images, and authenticate key exchange with the pairing secret.
 - Double-click dog emoji reactions.
 - Compact diagnostics panel with expandable full debug details.
 - Invite link with QR code for phone join flow.
 - TURN candidates enabled by default, preferring short-lived same-origin credentials with complete static credentials as migration/local fallback.
 - Bounded automatic recovery for media, chat control, and bulk file transports, with relay-only escalation after repeated media establishment failure.
+- Independent PeerServer signaling recovery that preserves healthy P2P transports, pauses ordinary meetings after bounded retries, and keeps paired-device retries active while the app screen remains active.
 
 ## Important Modules
 
@@ -54,12 +55,16 @@ Home does not request camera or microphone permission on page load. Its media bu
 - `src/lib/iceConfig.ts`: ICE server and TURN mode generation.
 - `src/lib/turnCredentials.ts`: dynamic credential validation, refresh timing, and static fallback resolution.
 - `src/lib/connectionRecovery.ts`: transport deadlines, reconnect backoff, and TURN mode escalation.
+- `src/lib/peerErrorPolicy.ts`: PeerJS error classification and signaling retry timing.
+- `src/lib/mediaErrorPolicy.ts`: user-facing camera/microphone error classification.
 - `src/lib/transportWatchdog.ts`: cancellable data-transport watchdog wiring.
 - `src/lib/turnFallback.ts`: user-facing recovery status labels.
 - `src/lib/mediaStats.ts`: stats parsing for codec, bitrate, bandwidth, and TURN usage.
 - `src/components/NetworkDiagnosticsPanel.tsx`: collapsed/expanded diagnostics panel.
 - `src/components/InviteLinkCard.tsx`: invite link, copy action, QR code.
 - `src/components/CallControls.tsx`: desktop/mobile call controls and accessible control state.
+- `src/components/CallIssuePanel.tsx`: blocking terminal or media-setup errors with recovery actions.
+- `src/components/ConnectionStatusNotice.tsx`: non-blocking signaling, transport, and device recovery notices.
 - `functions/api/turn-credentials.ts`: same-origin coturn REST credential issuer for Cloudflare Pages.
 
 ## Known Risks

@@ -47,6 +47,14 @@ Recovery role is based on stable session role, not the current URL shape:
 
 `src/lib/connectionRecovery.ts` owns deadlines, backoff, and mode escalation. `src/lib/transportWatchdog.ts` attaches cancellable watchdogs to data transports. `src/lib/turnFallback.ts` maps recovery stages to user-facing status text; those labels describe enabled candidates or recovery mode, not proof of selected relay traffic.
 
+### Signaling Recovery And Error Boundaries
+
+`src/hooks/usePeer.ts` treats the PeerServer signaling socket separately from the active WebRTC transports. A signaling outage does not close an otherwise healthy media or data connection. `network`, `server-error`, `socket-error`, `socket-closed`, and `disconnected` errors use the same 0.5, 1, 2, 4, 8, and 15 second jittered backoff before calling `Peer.reconnect()`; ordinary meetings pause after six automatic attempts and expose a manual retry, while device sessions continue at the capped interval while the page/app remains active. Browser `online` expedites a retry, while `offline` pauses attempts until connectivity returns.
+
+`peer-unavailable` and `webrtc` are connection-scoped errors and feed the existing media/data recovery path instead of replacing the call page. `unavailable-id` blocks stable host/device identities with an actionable retry; an ordinary guest may replace its disposable local Peer ID and reconnect to the same host. Browser incompatibility and invalid PeerJS configuration remain terminal.
+
+Recoverable signaling and transport problems keep the call UI, current stream, chat state, and transfer state mounted. The page shows a non-blocking recovery notice. Only terminal Peer initialization failures use a blocking service-error page. Initial camera/microphone failures use a separate device setup page with retry, text-only continuation, and return-home actions; a later media change failure keeps the previous working stream.
+
 Only the guest initiates outgoing media, control, and bulk connections. Only the host accepts incoming connections. Incoming metadata must name the active session, the guest role, the expected channel for data connections, and a `peerId` equal to the actual PeerJS connection peer. Wrong-session, wrong-role, wrong-channel, missing, and spoofed metadata are rejected. A healthy active connection is never replaced by an unsolicited duplicate.
 
 Session-resume and decrypted application payloads are also bound to the currently active DataConnection peer. User hangup disables automatic reconnect; a disconnected host returns to the waiting state.
@@ -72,6 +80,7 @@ For each initially disabled media kind, the app creates a disabled silent or bla
 Tracked details include:
 
 - app version and build time
+- PeerServer signaling lifecycle and the latest non-sensitive PeerJS error type
 - PeerJS plus separate media, chat-control, and bulk-file ICE/PeerConnection status
 - local/remote track counts
 - inbound/outbound codec

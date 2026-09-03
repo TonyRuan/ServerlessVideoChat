@@ -82,6 +82,7 @@ describe('turnFallback', () => {
     expect(turnFallbackStatusLabel('retrying')).toBe('连接失败，已启用 TURN 候选并重试');
     expect(turnFallbackStatusLabel('waiting')).toBe('连接失败，已启用 TURN 候选，等待对方重连');
     expect(turnFallbackStatusLabel('relay-only')).toBe('连接持续失败，正在强制 TURN 中继');
+    expect(turnFallbackStatusLabel('exhausted')).toBe('自动重连已暂停，请手动重试');
     expect(turnFallbackStatusLabel('active')).toBe('TURN 候选已启用，连接已恢复');
   });
 });

@@ -22,11 +22,14 @@ npm test -- src/lib/iceConfig.test.ts
 npm test -- src/lib/turnCredentials.test.ts
 npm test -- functions/api/turn-credentials.test.ts
 npm test -- src/lib/connectionRecovery.test.ts
+npm test -- src/lib/peerErrorPolicy.test.ts
+npm test -- src/lib/mediaErrorPolicy.test.ts
 npm test -- src/lib/transportWatchdog.test.ts
 npm test -- src/lib/turnFallback.test.ts
 npm test -- src/lib/mediaStats.test.ts
 npm test -- src/lib/networkDiagnostics.test.ts
 npm test -- src/components/NetworkDiagnosticsPanel.test.tsx
+npm test -- src/components/CallIssuePanel.test.tsx
 npm test -- src/components/InviteLinkCard.test.tsx
 npm test -- src/lib/callConnectionPolicy.test.ts
 npm test -- src/lib/callSession.test.ts

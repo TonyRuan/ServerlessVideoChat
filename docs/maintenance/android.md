@@ -5,7 +5,7 @@ The Android client is a Capacitor 8 wrapper around the same Vite build. Its pack
 ## First-Version Scope
 
 - Pair two devices once with a QR code or pasted device invite.
-- Keep a stable local PeerJS id, paired-device metadata, text/image history, drafts, and unsent text/image messages in local storage.
+- Keep a stable local PeerJS id, paired-device metadata, locally customized display names, text/image history, drafts, and unsent text/image messages in local storage.
 - Authenticate the device ECDH exchange with the pairing secret before deriving the AES-GCM chat key. A received chat message is marked sent only after an encrypted acknowledgement.
 - Retry the paired device connection indefinitely while the device screen is open. This is not an Android background service and there are no push notifications or cloud message queues.
 - Queue text and inline images while the other device is offline. Non-image files require both devices to be online; file handles and partial files are not persisted across an app restart.
@@ -25,6 +25,11 @@ E:\TR\misc\ARrecord\.tools\android-sdk
 `android/local.properties` is ignored and must point at the local SDK. Do not commit machine-specific SDK paths.
 
 ## Build A Debug APK
+
+For every installable Android update, increment `versionCode` in
+`android/app/build.gradle` and keep `versionName` aligned with the web package
+version. Android uses the monotonically increasing `versionCode` to decide
+whether an installed app can be upgraded in place.
 
 ```powershell
 npm install
@@ -58,7 +63,7 @@ Use the `ARrecord_API35` emulator and derive tap coordinates from a fresh UI hie
 2. Launch `com.tonyruan.serverlessvideochat/.MainActivity`.
 3. Confirm the home page shows `我的设备` and `配对新设备`.
 4. Create a device pairing and confirm the URL starts with the hosted public app URL, not `https://localhost`.
-5. Force-stop and relaunch, then confirm the paired-device card is still present.
+5. Rename a paired device, force-stop and relaunch, then confirm the custom name and paired-device card are still present.
 6. Inspect the crash buffer and relevant logcat errors.
 
 Do not grant camera or microphone permissions during this smoke test. Text-only device pairing does not need them. QR scanning needs camera permission and should be tested only when permission testing is explicitly in scope.

@@ -70,6 +70,7 @@ export function useMediaStream() {
     mediaDefaults?: CallMediaDefaults
   ) => {
     const requestGeneration = lifecycle.beginRequest();
+    setState((prev) => ({ ...prev, error: null }));
     const effectiveDefaults = mediaDefaults ?? {
       audioEnabled: audioEnabledRef.current,
       videoEnabled: videoEnabledRef.current,
@@ -111,6 +112,7 @@ export function useMediaStream() {
         console.error('Error accessing media devices:', err);
         setState(prev => ({
           ...prev,
+          stream: lifecycle.current() ?? prev.stream,
           error: err as Error,
           isAudioEnabled: effectiveDefaults.audioEnabled,
           isVideoEnabled: effectiveDefaults.videoEnabled,
@@ -193,6 +195,7 @@ export function useMediaStream() {
     } catch (err) {
       requestedStream?.getTracks().forEach(track => track.stop());
       console.error(`Error accessing ${kind} device:`, err);
+      setState((prev) => ({ ...prev, error: err as Error }));
       return false;
     }
   }, [currentQuality.frameRate, currentQuality.height, currentQuality.width, lifecycle]);
@@ -203,7 +206,7 @@ export function useMediaStream() {
     if (!audioTrack) {
       const nextEnabled = !audioEnabledRef.current;
       audioEnabledRef.current = nextEnabled;
-      setState(prev => ({ ...prev, isAudioEnabled: nextEnabled }));
+      setState(prev => ({ ...prev, error: null, isAudioEnabled: nextEnabled }));
       return nextEnabled;
     }
     if (isPlaceholderMediaTrack(audioTrack)) {
@@ -223,7 +226,7 @@ export function useMediaStream() {
 
     audioTrack.enabled = !audioTrack.enabled;
     audioEnabledRef.current = audioTrack.enabled;
-    setState(prev => ({ ...prev, isAudioEnabled: audioTrack.enabled }));
+    setState(prev => ({ ...prev, error: null, isAudioEnabled: audioTrack.enabled }));
     return audioTrack.enabled;
   }, [acquirePlaceholderReplacement, lifecycle]);
 
@@ -233,7 +236,7 @@ export function useMediaStream() {
     if (!videoTrack) {
       const nextEnabled = !videoEnabledRef.current;
       videoEnabledRef.current = nextEnabled;
-      setState(prev => ({ ...prev, isVideoEnabled: nextEnabled }));
+      setState(prev => ({ ...prev, error: null, isVideoEnabled: nextEnabled }));
       return nextEnabled;
     }
     if (isPlaceholderMediaTrack(videoTrack)) {
@@ -253,7 +256,7 @@ export function useMediaStream() {
 
     videoTrack.enabled = !videoTrack.enabled;
     videoEnabledRef.current = videoTrack.enabled;
-    setState(prev => ({ ...prev, isVideoEnabled: videoTrack.enabled }));
+    setState(prev => ({ ...prev, error: null, isVideoEnabled: videoTrack.enabled }));
     return videoTrack.enabled;
   }, [acquirePlaceholderReplacement, lifecycle]);
 

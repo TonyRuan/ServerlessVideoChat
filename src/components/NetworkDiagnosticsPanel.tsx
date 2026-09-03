@@ -16,7 +16,7 @@ import {
 import { turnFallbackStatusLabel, type TurnFallbackStatus } from '../lib/turnFallback';
 import { BUILD_INFO } from '../lib/buildInfo';
 import { cn } from '../lib/utils';
-import type { TurnCredentialSource } from '../hooks/usePeer';
+import type { PeerStatus, TurnCredentialSource } from '../hooks/usePeer';
 
 export interface TransportDiagnosticSnapshot {
   iceState: string;
@@ -60,6 +60,8 @@ interface NetworkDiagnosticsPanelProps {
   credentialExpiresAt: number | null;
   turnFallbackStatus: TurnFallbackStatus;
   remotePlayError: string;
+  peerStatus?: PeerStatus;
+  peerIssueType?: string;
 }
 
 function credentialSourceLabel(source: TurnCredentialSource) {
@@ -114,6 +116,19 @@ function statusLabel(status: CallConnectionStatus) {
   return labels[status];
 }
 
+function peerStatusLabel(status: PeerStatus) {
+  const labels: Record<PeerStatus, string> = {
+    initializing: 'Initializing',
+    ready: 'Ready',
+    reconnecting: 'Signaling reconnecting',
+    offline: 'Offline',
+    'retry-paused': 'Signaling paused',
+    blocked: 'Identity blocked',
+    fatal: 'Signaling failed',
+  };
+  return labels[status];
+}
+
 function recommendationLabel(summary: NetworkDiagnosticSummary) {
   if (summary.turnRecommendation === 'probably-not-needed') return '暂未明显需要 TURN';
   if (summary.turnRecommendation === 'recommended') return '建议准备 TURN';
@@ -148,12 +163,16 @@ export function NetworkDiagnosticsPanel({
   credentialExpiresAt,
   turnFallbackStatus,
   remotePlayError,
+  peerStatus = 'initializing',
+  peerIssueType,
 }: NetworkDiagnosticsPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [summary, setSummary] = useState<NetworkDiagnosticSummary | null>(null);
   const [probes, setProbes] = useState<IceProbeResult[]>([]);
   const [error, setError] = useState('');
+  const signalingDegraded = peerStatus !== 'ready' && peerStatus !== 'initializing';
+  const signalingStopped = peerStatus === 'retry-paused' || peerStatus === 'blocked' || peerStatus === 'fatal';
 
   const run = async () => {
     setIsExpanded(true);
@@ -182,14 +201,16 @@ export function NetworkDiagnosticsPanel({
           <span
             className={cn(
               'h-2 w-2 rounded-full',
-              effectiveConnectionStatus === 'connected'
+              effectiveConnectionStatus === 'connected' && !signalingDegraded
                 ? 'bg-green-500'
-                : effectiveConnectionStatus === 'disconnected'
+                : effectiveConnectionStatus === 'disconnected' || signalingStopped
                   ? 'bg-red-500'
                   : 'animate-pulse bg-yellow-500'
             )}
           />
-          <span className="truncate">{statusLabel(effectiveConnectionStatus)}</span>
+          <span className="truncate">
+            {signalingDegraded ? peerStatusLabel(peerStatus) : statusLabel(effectiveConnectionStatus)}
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {isExpanded && (
@@ -221,6 +242,9 @@ export function NetworkDiagnosticsPanel({
         <div>
           <div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">
             {BUILD_INFO.label}
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">
+            信令: {peerStatusLabel(peerStatus)}{peerIssueType ? ` / ${peerIssueType}` : ''}
           </div>
           <TransportDiagnosticsDetails
             media={{

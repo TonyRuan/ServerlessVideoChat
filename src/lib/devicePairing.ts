@@ -3,6 +3,7 @@ import type { CallSessionRole } from './callSession';
 export const DEVICE_PAIRING_STORAGE_VERSION = 1;
 export const DEVICE_IDENTITY_STORAGE_KEY = 'serverlessVideoChat:deviceIdentity:v1';
 export const PAIRED_DEVICES_STORAGE_KEY = 'serverlessVideoChat:pairedDevices:v1';
+export const MAX_DEVICE_NAME_LENGTH = 48;
 
 export interface DeviceIdentity {
   id: string;
@@ -18,6 +19,7 @@ export interface PairedDeviceSession {
   localPeerId: string;
   remotePeerId?: string;
   remoteName: string;
+  customName?: string;
   createdAt: number;
   lastOpenedAt: number;
 }
@@ -33,6 +35,9 @@ interface StoredPairedDevices {
 }
 
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{3,128}$/;
+const isValidDeviceName = (value: unknown): value is string => (
+  typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_DEVICE_NAME_LENGTH
+);
 
 const createToken = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -61,7 +66,7 @@ const isDeviceIdentity = (value: unknown): value is DeviceIdentity => {
   return (
     typeof record.id === 'string' && SAFE_TOKEN_PATTERN.test(record.id) &&
     typeof record.peerId === 'string' && SAFE_TOKEN_PATTERN.test(record.peerId) &&
-    typeof record.name === 'string' && record.name.trim().length > 0 && record.name.length <= 48 &&
+    isValidDeviceName(record.name) &&
     typeof record.createdAt === 'number' && Number.isSafeInteger(record.createdAt) && record.createdAt >= 0
   );
 };
@@ -75,7 +80,8 @@ const isPairedDeviceSession = (value: unknown): value is PairedDeviceSession => 
     (record.role === 'host' || record.role === 'guest') &&
     typeof record.localPeerId === 'string' && SAFE_TOKEN_PATTERN.test(record.localPeerId) &&
     (record.remotePeerId === undefined || (typeof record.remotePeerId === 'string' && SAFE_TOKEN_PATTERN.test(record.remotePeerId))) &&
-    typeof record.remoteName === 'string' && record.remoteName.trim().length > 0 && record.remoteName.length <= 48 &&
+    isValidDeviceName(record.remoteName) &&
+    (record.customName === undefined || isValidDeviceName(record.customName)) &&
     typeof record.createdAt === 'number' && Number.isSafeInteger(record.createdAt) && record.createdAt >= 0 &&
     typeof record.lastOpenedAt === 'number' && Number.isSafeInteger(record.lastOpenedAt) && record.lastOpenedAt >= 0
   );
@@ -150,12 +156,41 @@ export function loadPairedDevices(): PairedDeviceSession[] {
 export function savePairedDevice(device: PairedDeviceSession) {
   if (!isPairedDeviceSession(device)) return;
   const devices = loadPairedDevices();
-  const next = [device, ...devices.filter((item) => item.sessionId !== device.sessionId)]
+  const existing = devices.find((item) => item.sessionId === device.sessionId);
+  const persistedDevice = !Object.prototype.hasOwnProperty.call(device, 'customName') && existing?.customName
+    ? { ...device, customName: existing.customName }
+    : device;
+  const next = [persistedDevice, ...devices.filter((item) => item.sessionId !== device.sessionId)]
     .slice(0, 8);
   writeStorage(PAIRED_DEVICES_STORAGE_KEY, JSON.stringify({
     version: DEVICE_PAIRING_STORAGE_VERSION,
     devices: next,
   } satisfies StoredPairedDevices));
+}
+
+export function getPairedDeviceDisplayName(device: PairedDeviceSession) {
+  return device.customName?.trim() || device.remoteName;
+}
+
+export function updatePairedDeviceName({
+  sessionId,
+  name,
+}: {
+  sessionId: string;
+  name: string;
+}): PairedDeviceSession | null {
+  const customName = name.trim();
+  if (!isValidDeviceName(customName)) return null;
+
+  const existing = loadPairedDevices().find((item) => item.sessionId === sessionId);
+  if (!existing) return null;
+
+  const updated = {
+    ...existing,
+    customName: customName === existing.remoteName ? undefined : customName,
+  } satisfies PairedDeviceSession;
+  savePairedDevice(updated);
+  return updated;
 }
 
 export function updatePairedDeviceRemote({

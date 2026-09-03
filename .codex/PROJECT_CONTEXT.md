@@ -23,11 +23,12 @@ Primary stack:
 - The host's camera/microphone state at creation becomes the guest default. Voice-only joins request only a microphone; text-only joins request no device. Disabled placeholder tracks reserve PeerJS senders so a later manual enable requests and replaces only that device.
 - Home media preview is explicit rather than automatic; pre-preview controls only set defaults, so pasted text/voice invites do not trigger unrelated device permission prompts.
 - The home join form accepts only a complete valid HTTP/HTTPS invite URL; bare Peer IDs are rejected.
-- Regular meeting chat is memory-only. Explicit paired-device sessions persist capped text/image history and drafts locally, queue offline text/images, and keep retrying while the app screen is active; non-image files remain online-only.
+- Regular meeting chat is memory-only. Explicit paired-device sessions persist capped text/image history, drafts, and local custom device names, queue offline text/images, and keep retrying while the app screen is active; non-image files remain online-only.
 - Device pairing stores a stable local PeerJS id and pairing secret. The secret authenticates ECDH key messages and is mixed into the AES-GCM key derivation; encrypted message ACKs drive pending/sent state.
 - Default TURN mode is `on`, so complete TURN configuration adds candidates during initial ICE gathering. A valid `/api/turn-credentials` response is preferred; complete static `VITE_TURN_*` values are migration/local fallback.
 - URL query/hash and `VITE_TURN_MODE` can still disable TURN or force relay-only diagnostics.
 - Media/control/bulk transports use 15-second establishment deadlines, 5-second disconnected grace, immediate failed-state recovery, and six guest-only retries with jitter. Repeated media establishment failure can promote future connections from `on` to relay-only `force`; host remains passive.
+- PeerServer signaling has its own lifecycle: transient socket/network failures preserve healthy P2P transports and reconnect with jittered backoff. Ordinary meetings pause after six attempts with manual retry; device sessions continue at the capped interval while active. Connection-scoped PeerJS errors do not replace the call page, and media-device failures have separate retry/text-only actions.
 - Only the guest initiates media/control/bulk connections. The host accepts incoming connections only when session, role, channel, and actual PeerJS peer identity match; active connections cannot be replaced by an unsolicited duplicate.
 - The left-top diagnostics panel is compact by default and expands to separate media/chat/file states, selected TURN usage, and credential source/expiry without showing credential material.
 - New meeting invite UI includes both a share link and a QR code.
@@ -55,6 +56,8 @@ Primary stack:
 - `src/lib/iceConfig.ts`: STUN/TURN config and TURN mode parsing.
 - `src/lib/turnCredentials.ts`: dynamic credential validation, refresh, and static fallback.
 - `src/lib/connectionRecovery.ts`: deadlines, retry jitter, and TURN escalation.
+- `src/lib/peerErrorPolicy.ts`: PeerJS error classification and signaling retry timing.
+- `src/lib/mediaErrorPolicy.ts`: camera/microphone error presentation.
 - `src/lib/transportWatchdog.ts`: data-transport watchdog lifecycle.
 - `src/lib/turnFallback.ts`: connection-recovery status labels.
 - `src/lib/callSession.ts`: URL session parsing and invite links.
@@ -69,6 +72,8 @@ Primary stack:
 - `src/components/InviteLinkCard.tsx`: share link and QR code.
 - `src/components/ChatPanel.tsx`: encrypted chat UI, image preview attachments, and file download cards.
 - `src/components/CallControls.tsx`: accessible desktop/mobile call controls.
+- `src/components/CallIssuePanel.tsx`: terminal and media setup recovery UI.
+- `src/components/ConnectionStatusNotice.tsx`: non-blocking recovery status and retry UI.
 - `functions/api/turn-credentials.ts`: coturn REST credential issuer for Cloudflare Pages.
 
 ## Commands
