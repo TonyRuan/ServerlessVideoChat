@@ -1,7 +1,7 @@
 # ServerlessVideoChat Codex Context
 
 > Keep this file concise. Update the relevant `docs/maintenance/*` document first, then keep this summary aligned.
-> Last synced: 2026-08-21.
+> Last synced: 2026-09-19.
 
 ## What This Project Is
 
@@ -32,7 +32,9 @@ Primary stack:
 - Only the guest initiates media/control/bulk connections. The host accepts incoming connections only when session, role, channel, and actual PeerJS peer identity match; active connections cannot be replaced by an unsolicited duplicate.
 - The left-top diagnostics panel is compact by default and expands to separate media/chat/file states, selected TURN usage, and credential source/expiry without showing credential material.
 - New meeting invite UI includes both a share link and a QR code.
-- Chat supports text, image previews, and confirmation-first non-image file transfer. Control and bulk traffic use separate encrypted DataConnections; the receiver grants a 1MiB credit window, acknowledges completion only after writing the file, and advertises its persisted offset after a reconnect. Raw file frames are 256KiB, files are capped at 2GiB, and browsers without direct disk save support cap memory fallback at 10MiB.
+- Chat supports text, image previews, and confirmation-first non-image file transfer over separate control/bulk DataConnections. Files default to application AES-GCM with a 1MiB credit window; opt-in fast mode skips that layer for file bytes and uses 8MiB. Both retain WebRTC DTLS; text, images, and file controls remain application-encrypted. Fast requires encrypted capability negotiation and matching acceptance; old clients default to encrypted and must update for fast mode.
+- File frames remain 256KiB, with quarter-window credits coalesced asynchronously after writes. Completion follows destination close; reconnect resumes the persisted offset and replays acceptance at offset zero. Sender guards invalidate stale pumps and reserve offsets before asynchronous drain to accept early ACKs. Active progress updates are limited to every 250ms and do not rewrite device chat history; start/completion and durable state changes remain immediate. Files are capped at 2GiB, and browsers without direct disk save support cap memory fallback at 10MiB.
+- Bulk browser-queue backpressure uses configurable 256KiB high/128KiB low watermarks, `bufferedamountlow` events, and a 250ms fallback poll with cancellation/close cleanup; it does not replace receiver credit or constrain PeerJS's internal serialization queue.
 - Chat history is capped at 200 in-memory messages and evicted `blob:` download URLs are revoked.
 
 ## Maintenance Docs
@@ -66,6 +68,7 @@ Primary stack:
 - `src/lib/callConnectionPolicy.ts`: call role, metadata, replacement, and peer-binding policy.
 - `src/lib/fileTransferBinary.ts`: binary file frames.
 - `src/lib/fileTransferFlow.ts`: credit, ACK, and resume calculations.
+- `src/lib/fileTransferTransport.ts`: mode-aware file frames, bounded sender pump, acceptance replay, and coalesced credit publication; corresponding tests cover both modes, byte equality, early ACKs, and resume.
 - `src/lib/realtimeProtocol.ts`: strict realtime payload validation.
 - `src/lib/mediaStats.ts`: codec, bitrate, bandwidth, TURN usage stats.
 - `src/components/NetworkDiagnosticsPanel.tsx`: compact/expanded debug panel.

@@ -18,16 +18,17 @@ import { usePeer } from '../hooks/usePeer';
 import { useAutoHideControls } from '../hooks/useAutoHideControls';
 import { useHeartStore } from '../stores/heartStore';
 import { useChatStore } from '../stores/chatStore';
-import type { ChatFileAttachment, ChatImageAttachment } from '../lib/chatStorage';
+import type { ChatFileAttachment, ChatImageAttachment, FileTransferMode } from '../lib/chatStorage';
 import {
   createChatCryptoSession,
   isChatCryptoKeyMessage,
-  isEncryptedBinaryChatEnvelope,
   isEncryptedChatEnvelope,
   type ChatCryptoSession,
 } from '../lib/chatCrypto';
 import {
   CHAT_FILE_STREAM_CHUNK_BYTES,
+  createFileTransferCapabilities,
+  isFileTransferCapabilities,
   createWireChatAck,
   createWireChatFileAccept,
   createWireChatFileComplete,
@@ -61,16 +62,17 @@ import {
   claimOutgoingFileTransferStart,
   shouldPublishFileTransferProgress,
 } from '../lib/fileTransferProgress';
+import type { BinaryFileChunkFrame } from '../lib/fileTransferBinary';
+import { waitForFileDataChannelBuffer } from '../lib/fileTransferBackpressure';
 import {
-  decodeFileChunkFrame,
-  encodeFileChunkFrame,
-  type BinaryFileChunkFrame,
-} from '../lib/fileTransferBinary';
+  createFileCreditPublisher,
+  createFileTransferResumePayloads,
+  decodeFileTransferPayload,
+  getFileTransferCreditBytes,
+  pumpFileTransfer,
+} from '../lib/fileTransferTransport';
 import {
-  FILE_TRANSFER_CREDIT_WINDOW_BYTES,
-  advanceFileTransferWindow,
   applyFileTransferCredit,
-  canSendFileChunk,
   createFileTransferSendWindow,
   resumeFileTransferWindow,
   type FileTransferSendWindow,
@@ -151,6 +153,10 @@ interface OutgoingFileTransferState {
   file: File;
   messageId: string;
   isStarted: boolean;
+  mode: FileTransferMode;
+  accepted: boolean;
+  runId?: symbol;
+  needsPump?: boolean;
   window: FileTransferSendWindow;
   lastProgressUpdateAt: number;
   lastProgressUpdateBytes: number;
@@ -165,6 +171,7 @@ interface IncomingFileTransferState {
   savedPath?: string;
   chunks?: Uint8Array[];
   writable?: FileSystemWritableFileStreamLike;
+  publishCredit: (offset: number) => void;
 }
 
 interface FileSystemWritableFileStreamLike {
@@ -208,16 +215,6 @@ const sendEncryptedDataPayload = async (
   await waitForDataChannelBuffer(conn);
 };
 
-const sendEncryptedBinaryPayload = async (
-  conn: DataConnection,
-  session: ChatCryptoSession,
-  payload: Uint8Array
-) => {
-  const encrypted = await session.encryptBytes(payload);
-  await sendDataConnectionPayload(conn, encrypted);
-  await waitForDataChannelBuffer(conn);
-};
-
 const createTransferId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -239,11 +236,6 @@ const isSameCallSession = (a: CallSessionState, b: CallSessionState) =>
   && a.pairingSecret === b.pairingSecret
   && a.mediaDefaults.audioEnabled === b.mediaDefaults.audioEnabled
   && a.mediaDefaults.videoEnabled === b.mediaDefaults.videoEnabled;
-
-const readFileSlice = async (file: File, offset: number) => {
-  const slice = file.slice(offset, Math.min(file.size, offset + CHAT_FILE_STREAM_CHUNK_BYTES));
-  return new Uint8Array(await slice.arrayBuffer());
-};
 
 export default function CallPage() {
   const { remotePeerId } = useParams<{ remotePeerId: string }>();
@@ -359,6 +351,7 @@ export default function CallPage() {
   const controlWatchdogCleanupRef = useRef<(() => void) | null>(null);
   const bulkWatchdogCleanupRef = useRef<(() => void) | null>(null);
   const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
+  const remoteFastFileSupportRef = useRef(false);
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
   const chatCryptoPublicKeySentRef = useRef(false);
   const callSessionRef = useRef(callSession);
@@ -515,6 +508,7 @@ export default function CallPage() {
   }, [currentQuality]);
 
   const resetChatCryptoState = useCallback(() => {
+    remoteFastFileSupportRef.current = false;
     chatCryptoSessionRef.current = null;
     chatCryptoSessionPromiseRef.current = null;
     chatCryptoPublicKeySentRef.current = false;
@@ -596,6 +590,14 @@ export default function CallPage() {
     await sendEncryptedDataPayload(conn, session, payload);
   }, [ensureChatCryptoSession]);
 
+  const resumeIncomingFileTransfer = useCallback(async (transferId: string, transfer: IncomingFileTransferState) => {
+    for (const payload of createFileTransferResumePayloads(
+      transferId, myId, transfer.bytesReceived, transfer.offer.mode ?? 'encrypted', transfer.saveMode,
+    )) {
+      await sendFileControlPayload(payload);
+    }
+  }, [myId, sendFileControlPayload]);
+
   const handleIncomingFileChunk = useCallback(async (payload: BinaryFileChunkFrame) => {
     const transfer = incomingFileTransfersRef.current.get(payload.transferId);
     if (!transfer || payload.from !== transfer.offer.from) return;
@@ -638,16 +640,7 @@ export default function CallPage() {
       }
 
       if (transfer.bytesReceived !== fileSize) {
-        try {
-          await sendFileControlPayload(createWireChatFileCredit(
-            payload.transferId,
-            myId,
-            transfer.bytesReceived,
-            FILE_TRANSFER_CREDIT_WINDOW_BYTES
-          ));
-        } catch {
-          // The persisted offset is advertised after the control channel reconnects.
-        }
+        transfer.publishCredit(transfer.bytesReceived);
         return;
       }
 
@@ -704,11 +697,15 @@ export default function CallPage() {
     }
   }, [myId, sendFileControlPayload, updateFileTransfer]);
 
-  const startOutgoingFileTransfer = useCallback(async (transferId: string) => {
+  const startOutgoingFileTransfer = useCallback(async function startTransfer(transferId: string) {
     const transfer = outgoingFileTransfersRef.current.get(transferId);
     const conn = bulkDataConnRef.current;
-    if (!transfer) return;
-    if (!claimOutgoingFileTransferStart(transfer)) return;
+    if (!transfer?.accepted) return;
+    if (!claimOutgoingFileTransferStart(transfer)) {
+      transfer.needsPump = true;
+      return;
+    }
+    transfer.needsPump = false;
 
     if (!conn?.open || !myId) {
       transfer.isStarted = false;
@@ -721,70 +718,56 @@ export default function CallPage() {
       return;
     }
 
-    const startedAt = Date.now();
-    transfer.lastProgressUpdateAt = startedAt;
-    transfer.lastProgressUpdateBytes = 0;
-    updateFileTransfer(transferId, {
-      status: 'transferring',
-      bytesTransferred: 0,
-    });
+    const runId = Symbol('file-pump');
+    transfer.runId = runId;
+    const isCurrent = () => transfer.runId === runId
+      && outgoingFileTransfersRef.current.get(transferId) === transfer
+      && bulkDataConnRef.current === conn
+      && chatCryptoSessionRef.current === session;
 
     try {
-      while (transfer.window.nextOffset < transfer.file.size) {
-        const offset = transfer.window.nextOffset;
-        const bytes = await readFileSlice(transfer.file, offset);
-        if (!canSendFileChunk(transfer.window, bytes.byteLength, transfer.file.size)) break;
-
-        await sendEncryptedBinaryPayload(
-          conn,
-          session,
-          encodeFileChunkFrame({
-            transferId,
-            from: myId,
-            index: offset / CHAT_FILE_STREAM_CHUNK_BYTES,
-            offset,
-            data: bytes,
-          })
-        );
-
-        transfer.window = advanceFileTransferWindow(
-          transfer.window,
-          bytes.byteLength,
-          transfer.file.size
-        );
-        const bytesSent = transfer.window.nextOffset;
-        const now = Date.now();
-        if (shouldPublishFileTransferProgress({
-          bytesTransferred: bytesSent,
-          totalBytes: transfer.file.size,
-          snapshot: {
-            lastUpdateAt: transfer.lastProgressUpdateAt,
-            lastUpdateBytes: transfer.lastProgressUpdateBytes,
-          },
-          now,
-        })) {
-          transfer.lastProgressUpdateAt = now;
-          transfer.lastProgressUpdateBytes = offset;
-          updateFileTransfer(transferId, {
-            status: 'transferring',
-            bytesTransferred: bytesSent,
+      await pumpFileTransfer({
+        transfer, transferId, from: myId, session, isCurrent,
+        send: async (payload) => {
+          await sendDataConnectionPayload(conn, payload);
+          await waitForFileDataChannelBuffer(conn.dataChannel, {
+            isCurrent,
+            isConnectionOpen: () => conn.open,
           });
-        }
-      }
-
-      transfer.isStarted = false;
-      updateFileTransfer(transferId, {
-        status: 'transferring',
-        bytesTransferred: transfer.window.nextOffset,
+        },
+        onProgress: (bytesSent) => {
+          const now = Date.now();
+          if (shouldPublishFileTransferProgress({
+            bytesTransferred: bytesSent,
+            totalBytes: transfer.file.size,
+            snapshot: {
+              lastUpdateAt: transfer.lastProgressUpdateAt,
+              lastUpdateBytes: transfer.lastProgressUpdateBytes,
+            },
+            now,
+          })) {
+            transfer.lastProgressUpdateAt = now;
+            transfer.lastProgressUpdateBytes = bytesSent;
+            updateFileTransfer(transferId, {
+              status: 'transferring',
+              bytesTransferred: bytesSent,
+            });
+          }
+        },
       });
     } catch (err) {
-      transfer.isStarted = false;
+      if (!isCurrent()) return;
       if (!conn.open || conn.dataChannel?.readyState !== 'open') return;
       updateFileTransfer(transferId, {
         status: 'failed',
         error: err instanceof Error ? err.message : '文件发送失败',
       });
       outgoingFileTransfersRef.current.delete(transferId);
+    } finally {
+      if (transfer.runId === runId) {
+        transfer.isStarted = false;
+        if (isCurrent() && conn.open && transfer.needsPump) void startTransfer(transferId);
+      }
     }
   }, [myId, updateFileTransfer]);
 
@@ -837,14 +820,9 @@ export default function CallPage() {
         const session = await ensureChatCryptoSession(conn);
         await session.acceptPeerKeyMessage(data);
         setIsChatSecure(true);
+        await sendEncryptedDataPayload(conn, session, createFileTransferCapabilities(myId));
         for (const [transferId, transfer] of incomingFileTransfersRef.current) {
-          await sendEncryptedDataPayload(conn, session, createWireChatFileCredit(
-            transferId,
-            myId,
-            transfer.bytesReceived,
-            FILE_TRANSFER_CREDIT_WINDOW_BYTES,
-            true
-          ));
+          await resumeIncomingFileTransfer(transferId, transfer);
         }
         for (const [transferId, completion] of pendingFileCompletionsRef.current) {
           await sendEncryptedDataPayload(conn, session, createWireChatFileComplete(
@@ -866,6 +844,12 @@ export default function CallPage() {
       try {
         const session = await ensureChatCryptoSession(conn);
         const payload = await session.decrypt(data);
+        if (isFileTransferCapabilities(payload)) {
+          if (isPayloadPeerValid(payload, conn.peer)) {
+            remoteFastFileSupportRef.current = payload.modes.includes('fast');
+          }
+          return;
+        }
         if (isWireChatPayload(payload)) {
           if (!isPayloadPeerValid(payload.message, conn.peer)) return;
           if (myId) {
@@ -891,6 +875,8 @@ export default function CallPage() {
 
         if (isWireChatFileOfferPayload(payload)) {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
+          if (incomingFileOffersRef.current.has(payload.transferId)
+            || incomingFileTransfersRef.current.has(payload.transferId)) return;
           if (myId) {
             setConversationPeers(
               myId,
@@ -908,11 +894,19 @@ export default function CallPage() {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
           const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
           if (!transfer) return;
+          if ((payload.mode ?? 'encrypted') !== transfer.mode) {
+            updateFileTransfer(payload.transferId, { status: 'failed', error: '双方文件传输模式不一致，请刷新后重试' });
+            outgoingFileTransfersRef.current.delete(payload.transferId);
+            return;
+          }
+          if (transfer.accepted) return;
+          transfer.accepted = true;
           transfer.window = resumeFileTransferWindow(transfer.window, {
             persistedOffset: payload.acknowledgedOffset,
             creditBytes: payload.creditBytes,
             fileSize: transfer.file.size,
           });
+          updateFileTransfer(payload.transferId, { status: 'transferring', bytesTransferred: 0 });
           void startOutgoingFileTransfer(payload.transferId);
           return;
         }
@@ -920,7 +914,11 @@ export default function CallPage() {
         if (isWireChatFileCreditPayload(payload)) {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
           const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
-          if (!transfer) return;
+          if (!transfer?.accepted) return;
+          if (payload.resume) {
+            transfer.runId = undefined;
+            transfer.isStarted = false;
+          }
           transfer.window = payload.resume
             ? resumeFileTransferWindow(transfer.window, {
                 persistedOffset: payload.acknowledgedOffset,
@@ -991,6 +989,7 @@ export default function CallPage() {
     flushPendingChatMessages,
     myId,
     receiveHeart,
+    resumeIncomingFileTransfer,
     setConversationPeers,
     startOutgoingFileTransfer,
     updateFileTransfer,
@@ -998,13 +997,13 @@ export default function CallPage() {
   ]);
 
   const handleBulkDataMessage = useCallback(async (data: unknown, conn: DataConnection) => {
-    if (!isEncryptedBinaryChatEnvelope(data)) return;
     const session = chatCryptoSessionRef.current;
     if (!session?.isReady()) return;
-
-    const plaintext = await session.decryptBytes(data);
-    const payload = decodeFileChunkFrame(plaintext);
-    if (!isPayloadPeerValid(payload, conn.peer)) return;
+    const payload = await decodeFileTransferPayload(data, session, conn.peer, (transferId) => {
+      const transfer = incomingFileTransfersRef.current.get(transferId);
+      return transfer ? transfer.offer.mode ?? 'encrypted' : undefined;
+    });
+    if (!payload || bulkDataConnRef.current !== conn || chatCryptoSessionRef.current !== session) return;
     await handleIncomingFileChunk(payload);
   }, [handleIncomingFileChunk]);
 
@@ -1045,8 +1044,9 @@ export default function CallPage() {
   const resetDataConnection = useCallback((abortTransfers = false) => {
     resetChatCryptoState();
     dataMessageQueueRef.current = Promise.resolve();
-    bulkMessageQueueRef.current = Promise.resolve();
+    // Keep active disk writes serialized across a reconnect.
     for (const transfer of outgoingFileTransfersRef.current.values()) {
+      transfer.runId = undefined;
       transfer.isStarted = false;
     }
 
@@ -1303,13 +1303,7 @@ export default function CallPage() {
         }
       }
       for (const [transferId, transfer] of incomingFileTransfersRef.current) {
-        void sendFileControlPayload(createWireChatFileCredit(
-          transferId,
-          myId,
-          transfer.bytesReceived,
-          FILE_TRANSFER_CREDIT_WINDOW_BYTES,
-          true
-        )).catch(() => undefined);
+        void resumeIncomingFileTransfer(transferId, transfer).catch(() => undefined);
       }
     };
 
@@ -1320,6 +1314,7 @@ export default function CallPage() {
         bulkWatchdogCleanupRef.current = null;
         bulkDataConnRef.current = null;
         for (const transfer of outgoingFileTransfersRef.current.values()) {
+          transfer.runId = undefined;
           transfer.isStarted = false;
         }
         scheduleDataReconnect();
@@ -1345,10 +1340,9 @@ export default function CallPage() {
 
     if (conn.open) handleOpen();
   }, [
-    myId,
     queueBulkDataMessage,
+    resumeIncomingFileTransfer,
     scheduleDataReconnect,
-    sendFileControlPayload,
     startOutgoingFileTransfer,
   ]);
 
@@ -1868,10 +1862,12 @@ export default function CallPage() {
     text,
     image,
     file,
+    fileTransferMode = 'encrypted',
   }: {
     text?: string;
     image?: ChatImageAttachment;
     file?: File;
+    fileTransferMode?: FileTransferMode;
   }) => {
     if (!myId) {
       throw new Error('Peer 尚未就绪');
@@ -1881,6 +1877,9 @@ export default function CallPage() {
     const canSendNow = Boolean(conn?.open && chatCryptoSessionRef.current?.isReady());
     if (file && !canSendNow) {
       throw new Error('文件需要双方在线并建立加密连接后发送');
+    }
+    if (file && fileTransferMode === 'fast' && !remoteFastFileSupportRef.current) {
+      throw new Error('对方尚未支持极速模式，请双方刷新到最新版本，或选择加密模式');
     }
 
     const transferId = file ? createTransferId() : undefined;
@@ -1895,6 +1894,7 @@ export default function CallPage() {
             id: transferId,
             status: 'waiting',
             bytesTransferred: 0,
+            mode: fileTransferMode,
           }
         : undefined,
     });
@@ -1921,6 +1921,8 @@ export default function CallPage() {
           file,
           messageId: message.id,
           isStarted: false,
+          mode: fileTransferMode,
+          accepted: false,
           window: createFileTransferSendWindow(file.size),
           lastProgressUpdateAt: 0,
           lastProgressUpdateBytes: 0,
@@ -1996,7 +1998,9 @@ export default function CallPage() {
         throw new Error('加密通道尚未就绪');
       }
 
-      incomingFileTransfersRef.current.set(messageId, {
+      const mode = offer.mode ?? 'encrypted';
+      const creditBytes = getFileTransferCreditBytes(mode);
+      const transfer: IncomingFileTransferState = {
         offer,
         bytesReceived: 0,
         lastProgressUpdateAt: Date.now(),
@@ -2005,7 +2009,13 @@ export default function CallPage() {
         savedPath,
         writable,
         chunks: writable ? undefined : [],
-      });
+        publishCredit: createFileCreditPublisher({
+          creditBytes,
+          isCurrent: () => incomingFileTransfersRef.current.get(messageId) === transfer,
+          send: (offset) => sendFileControlPayload(createWireChatFileCredit(messageId, myId, offset, creditBytes)),
+        }),
+      };
+      incomingFileTransfersRef.current.set(messageId, transfer);
       updateFileTransfer(messageId, {
         status: 'transferring',
         bytesTransferred: 0,
@@ -2016,7 +2026,8 @@ export default function CallPage() {
         messageId,
         myId,
         saveMode,
-        FILE_TRANSFER_CREDIT_WINDOW_BYTES
+        creditBytes,
+        mode
       ));
     } catch (err) {
       const errorName = typeof err === 'object' && err !== null && 'name' in err
@@ -2034,7 +2045,7 @@ export default function CallPage() {
     } finally {
       acceptingFileTransfersRef.current.delete(messageId);
     }
-  }, [ensureChatCryptoSession, myId, updateFileTransfer]);
+  }, [ensureChatCryptoSession, myId, sendFileControlPayload, updateFileTransfer]);
 
   const handleDeclineFileTransfer = useCallback(async (messageId: string) => {
     if (!myId) {

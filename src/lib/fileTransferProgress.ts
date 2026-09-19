@@ -94,7 +94,6 @@ export function takeContiguousPendingFileChunks(
 }
 
 export const FILE_TRANSFER_PROGRESS_UPDATE_INTERVAL_MS = 250;
-export const FILE_TRANSFER_PROGRESS_UPDATE_BYTES = 1024 * 1024;
 
 export interface FileTransferProgressSnapshot {
   lastUpdateAt: number;
@@ -107,7 +106,6 @@ export interface FileTransferProgressPublishInput {
   snapshot: FileTransferProgressSnapshot;
   now?: number;
   intervalMs?: number;
-  byteDelta?: number;
 }
 
 export function shouldPublishFileTransferProgress({
@@ -116,10 +114,8 @@ export function shouldPublishFileTransferProgress({
   snapshot,
   now = Date.now(),
   intervalMs = FILE_TRANSFER_PROGRESS_UPDATE_INTERVAL_MS,
-  byteDelta = FILE_TRANSFER_PROGRESS_UPDATE_BYTES,
 }: FileTransferProgressPublishInput) {
   if (bytesTransferred <= 0) return true;
   if (bytesTransferred >= totalBytes) return true;
-  if (now - snapshot.lastUpdateAt >= intervalMs) return true;
-  return bytesTransferred - snapshot.lastUpdateBytes >= byteDelta;
+  return now - snapshot.lastUpdateAt >= intervalMs;
 }

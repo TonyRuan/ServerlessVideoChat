@@ -7,6 +7,7 @@ import {
   type ChatImageAttachment,
   type ChatKind,
   type ChatMessage,
+  type FileTransferMode,
 } from './chatStorage';
 import { isAcceptedChatImageType } from './chatAttachments';
 import { isValidCallSessionId, isValidPeerId, type CallSessionRole } from './callSession';
@@ -15,6 +16,7 @@ const FILE_MIME_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 export const MAX_CHAT_TEXT_CHARS = 10_000;
 export const CHAT_FILE_STREAM_CHUNK_BYTES = 256 * 1024;
 export const CHAT_FILE_CREDIT_WINDOW_BYTES = 1024 * 1024;
+export const CHAT_FILE_MAX_CREDIT_WINDOW_BYTES = 8 * 1024 * 1024;
 const CHAT_FILE_STREAM_CHUNK_DATA_CHARS = Math.ceil(CHAT_FILE_STREAM_CHUNK_BYTES / 3) * 4;
 
 export interface WireChatMessage {
@@ -43,9 +45,17 @@ export type WireChatFileSaveMode = 'file-system' | 'memory';
 
 export type WireChatFileMetadata = Omit<ChatFileAttachment, 'dataUrl' | 'objectUrl'>;
 
+export interface FileTransferCapabilities {
+  type: 'FILE_TRANSFER_CAPABILITIES';
+  version: 1;
+  from: string;
+  modes: FileTransferMode[];
+}
+
 export interface WireChatFileOfferPayload {
   type: 'CHAT_FILE_OFFER';
-  version: 1;
+  version: 1 | 2;
+  mode?: FileTransferMode;
   transferId: string;
   from: string;
   message: {
@@ -60,6 +70,7 @@ export interface WireChatFileOfferPayload {
 export interface WireChatFileAcceptPayload {
   type: 'CHAT_FILE_ACCEPT';
   version: 2;
+  mode?: FileTransferMode;
   transferId: string;
   from: string;
   saveMode: WireChatFileSaveMode;
@@ -147,15 +158,30 @@ export function createWireChatAck(messageId: string, from: string): WireChatAckP
   };
 }
 
+export function getFileTransferMode(value: { mode?: FileTransferMode }): FileTransferMode {
+  return value.mode ?? 'encrypted';
+}
+
+export function createFileTransferCapabilities(from: string): FileTransferCapabilities {
+  return {
+    type: 'FILE_TRANSFER_CAPABILITIES',
+    version: 1,
+    from,
+    modes: ['encrypted', 'fast'],
+  };
+}
+
 export function createWireChatFileOffer(message: ChatMessage, from: string): WireChatFileOfferPayload {
   if (!message.file || message.image || (message.kind !== 'file' && message.kind !== 'mixed')) {
     throw new Error('Message is not a file transfer');
   }
 
   const kind: 'file' | 'mixed' = message.kind;
+  const mode = getFileTransferMode(message.fileTransfer ?? {});
   return {
     type: 'CHAT_FILE_OFFER',
-    version: 1,
+    version: mode === 'fast' ? 2 : 1,
+    ...(mode === 'fast' ? { mode } : {}),
     transferId: message.id,
     from,
     message: {
@@ -176,11 +202,13 @@ export function createWireChatFileAccept(
   transferId: string,
   from: string,
   saveMode: WireChatFileSaveMode,
-  creditBytes = CHAT_FILE_CREDIT_WINDOW_BYTES
+  creditBytes = CHAT_FILE_CREDIT_WINDOW_BYTES,
+  mode: FileTransferMode = 'encrypted'
 ): WireChatFileAcceptPayload {
   return {
     type: 'CHAT_FILE_ACCEPT',
     version: 2,
+    ...(mode === 'fast' ? { mode } : {}),
     transferId,
     from,
     saveMode,
@@ -394,11 +422,33 @@ function isValidChatText(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CHAT_TEXT_CHARS;
 }
 
+export function isFileTransferCapabilities(payload: unknown): payload is FileTransferCapabilities {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const record = payload as Record<string, unknown>;
+  return (
+    record.type === 'FILE_TRANSFER_CAPABILITIES' &&
+    record.version === 1 &&
+    isBoundedIdentifier(record.from) &&
+    Array.isArray(record.modes) &&
+    record.modes.length <= 2 &&
+    record.modes.includes('encrypted') &&
+    record.modes.every((mode) => mode === 'encrypted' || mode === 'fast') &&
+    new Set(record.modes).size === record.modes.length
+  );
+}
+
 export function isWireChatFileOfferPayload(payload: unknown): payload is WireChatFileOfferPayload {
   if (typeof payload !== 'object' || payload === null) return false;
 
   const record = payload as Record<string, unknown>;
-  if (record.type !== 'CHAT_FILE_OFFER' || record.version !== 1) return false;
+  if (record.type !== 'CHAT_FILE_OFFER') return false;
+  if (record.version === 1) {
+    if (record.mode !== undefined && record.mode !== 'encrypted') return false;
+  } else if (record.version === 2) {
+    if (record.mode !== 'fast') return false;
+  } else {
+    return false;
+  }
   if (!isBoundedIdentifier(record.transferId) || !isBoundedIdentifier(record.from)) return false;
   if (typeof record.message !== 'object' || record.message === null) return false;
 
@@ -420,6 +470,7 @@ export function isWireChatFileAcceptPayload(payload: unknown): payload is WireCh
   return (
     record.type === 'CHAT_FILE_ACCEPT' &&
     record.version === 2 &&
+    (record.mode === undefined || record.mode === 'encrypted' || record.mode === 'fast') &&
     isNonEmptyString(record.transferId) &&
     isNonEmptyString(record.from) &&
     (record.saveMode === 'file-system' || record.saveMode === 'memory') &&
@@ -450,7 +501,7 @@ function isSafeByteOffset(value: unknown, allowZero = true) {
 }
 
 function isValidCreditBytes(value: unknown) {
-  return isSafeByteOffset(value, false) && (value as number) <= CHAT_FILE_CREDIT_WINDOW_BYTES;
+  return isSafeByteOffset(value, false) && (value as number) <= CHAT_FILE_MAX_CREDIT_WINDOW_BYTES;
 }
 
 export function isWireChatFileCreditPayload(payload: unknown): payload is WireChatFileCreditPayload {

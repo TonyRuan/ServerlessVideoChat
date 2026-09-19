@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   createWireChatAck,
+  CHAT_FILE_CREDIT_WINDOW_BYTES,
+  CHAT_FILE_MAX_CREDIT_WINDOW_BYTES,
   CHAT_FILE_STREAM_CHUNK_BYTES,
+  createFileTransferCapabilities,
   createWireChatFileAccept,
   createWireChatFileComplete,
   createWireChatFileCredit,
@@ -11,6 +14,8 @@ import {
   createWireChatFileStreamChunk,
   createSessionResumeMessage,
   createWireChatMessage,
+  getFileTransferMode,
+  isFileTransferCapabilities,
   isWireChatAckPayload,
   isWireChatFileAcceptPayload,
   isWireChatFileCompletePayload,
@@ -208,6 +213,11 @@ describe('chatProtocol', () => {
       },
     });
     expect(isWireChatFileOfferPayload(offer)).toBe(true);
+    expect(getFileTransferMode(offer)).toBe('encrypted');
+    expect(createWireChatFileOffer({
+      ...fileMessage,
+      fileTransfer: { ...fileMessage.fileTransfer!, mode: 'encrypted' },
+    }, 'peer-a')).toEqual(offer);
     expect(JSON.stringify(offer)).not.toContain('base64');
     expect(isWireChatFileOfferPayload({ ...offer, message: { ...offer.message, kind: 'text' } })).toBe(false);
     expect(isWireChatFileOfferPayload({
@@ -236,6 +246,52 @@ describe('chatProtocol', () => {
     })).toBe(false);
   });
 
+  it('requires a version 2 fast offer to explicitly negotiate fast mode', () => {
+    const offer = createWireChatFileOffer({
+      id: 'fast-1',
+      conversationId: 'a:b',
+      direction: 'out',
+      kind: 'file',
+      file: { mimeType: 'application/zip', name: 'logs.zip', size: 1024 },
+      fileTransfer: { id: 'fast-1', mode: 'fast', status: 'waiting', bytesTransferred: 0 },
+      createdAt: 111,
+      status: 'sending',
+    }, 'peer-a');
+
+    expect(offer.version).toBe(2);
+    expect(offer.mode).toBe('fast');
+    expect(getFileTransferMode(offer)).toBe('fast');
+    expect(isWireChatFileOfferPayload(offer)).toBe(true);
+    for (const mode of [undefined, 'encrypted', 'unknown', null, false]) {
+      expect(isWireChatFileOfferPayload({ ...offer, mode })).toBe(false);
+    }
+    for (const mode of ['fast', 'unknown', null, false]) {
+      expect(isWireChatFileOfferPayload({ ...offer, version: 1, mode })).toBe(false);
+    }
+    expect(isWireChatFileOfferPayload({ ...offer, version: 1, mode: undefined })).toBe(true);
+    expect(isWireChatFileOfferPayload({ ...offer, version: 1, mode: 'encrypted' })).toBe(true);
+    expect(isWireChatFileOfferPayload({ ...offer, version: 3 })).toBe(false);
+    expect(isWireChatFileOfferPayload({ ...offer, message: { ...offer.message, id: 'other-transfer' } })).toBe(false);
+    expect(isWireChatFileOfferPayload({ ...offer, message: { ...offer.message, file: { ...offer.message.file, size: Infinity } } })).toBe(false);
+  });
+
+  it('advertises supported modes without accepting malformed capabilities', () => {
+    const capabilities = createFileTransferCapabilities('peer-a');
+    expect(capabilities).toEqual({
+      type: 'FILE_TRANSFER_CAPABILITIES', version: 1, from: 'peer-a', modes: ['encrypted', 'fast'],
+    });
+    expect(isFileTransferCapabilities(capabilities)).toBe(true);
+    expect(isFileTransferCapabilities({ ...capabilities, modes: ['encrypted'] })).toBe(true);
+    for (const modes of [undefined, null, 'fast', [], ['fast'], ['encrypted', 'unknown'], ['encrypted', 'encrypted']]) {
+      expect(isFileTransferCapabilities({ ...capabilities, modes })).toBe(false);
+    }
+    for (const from of ['', ' ', 'x'.repeat(129), null]) {
+      expect(isFileTransferCapabilities({ ...capabilities, from })).toBe(false);
+    }
+    expect(isFileTransferCapabilities({ ...capabilities, version: 2 })).toBe(false);
+    expect(isFileTransferCapabilities(null)).toBe(false);
+  });
+
   it('creates and validates file accept and decline payloads', () => {
     const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system', 1024 * 1024);
     const declined = createWireChatFileDecline('transfer-1', 'peer-b');
@@ -244,6 +300,46 @@ describe('chatProtocol', () => {
     expect(isWireChatFileDeclinePayload(declined)).toBe(true);
     expect(isWireChatFileAcceptPayload({ ...accepted, saveMode: 'unknown' })).toBe(false);
     expect(isWireChatFileDeclinePayload({ ...declined, transferId: '' })).toBe(false);
+  });
+
+  it('keeps encrypted accepts legacy-compatible and explicitly accepts fast mode', () => {
+    const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system');
+    expect(accepted).toEqual({
+      type: 'CHAT_FILE_ACCEPT',
+      version: 2,
+      transferId: 'transfer-1',
+      from: 'peer-b',
+      saveMode: 'file-system',
+      acknowledgedOffset: 0,
+      creditBytes: CHAT_FILE_CREDIT_WINDOW_BYTES,
+    });
+    expect(getFileTransferMode(accepted)).toBe('encrypted');
+    expect(createWireChatFileAccept('transfer-1', 'peer-b', 'file-system', undefined, 'encrypted')).toEqual(accepted);
+    const fast = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system', CHAT_FILE_MAX_CREDIT_WINDOW_BYTES, 'fast');
+    expect(isWireChatFileAcceptPayload(fast)).toBe(true);
+    expect(getFileTransferMode(fast)).toBe('fast');
+    for (const mode of ['unknown', null, false, 1]) {
+      expect(isWireChatFileAcceptPayload({ ...fast, mode })).toBe(false);
+    }
+    expect(isWireChatFileAcceptPayload({ ...fast, acknowledgedOffset: 1 })).toBe(false);
+    expect(isWireChatFileAcceptPayload({ ...fast, version: 1 })).toBe(false);
+  });
+
+  it('bounds initial and replenished credit to 8 MiB while preserving the 1 MiB default', () => {
+    expect(CHAT_FILE_CREDIT_WINDOW_BYTES).toBe(1024 * 1024);
+    expect(CHAT_FILE_MAX_CREDIT_WINDOW_BYTES).toBe(8 * 1024 * 1024);
+    const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system');
+    const credit = createWireChatFileCredit('transfer-1', 'peer-b', 256 * 1024);
+    expect(accepted.creditBytes).toBe(CHAT_FILE_CREDIT_WINDOW_BYTES);
+    expect(credit.creditBytes).toBe(CHAT_FILE_CREDIT_WINDOW_BYTES);
+    for (const creditBytes of [1, CHAT_FILE_CREDIT_WINDOW_BYTES + 1, CHAT_FILE_MAX_CREDIT_WINDOW_BYTES]) {
+      expect(isWireChatFileAcceptPayload({ ...accepted, creditBytes })).toBe(true);
+      expect(isWireChatFileCreditPayload({ ...credit, creditBytes })).toBe(true);
+    }
+    for (const creditBytes of [0, -1, 1.5, CHAT_FILE_MAX_CREDIT_WINDOW_BYTES + 1, Infinity, NaN, '1024']) {
+      expect(isWireChatFileAcceptPayload({ ...accepted, creditBytes })).toBe(false);
+      expect(isWireChatFileCreditPayload({ ...credit, creditBytes })).toBe(false);
+    }
   });
 
   it('creates and validates receiver credit, completion, and transfer errors', () => {

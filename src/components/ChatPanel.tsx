@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { Download, File as FileIcon, LockKeyhole, Paperclip, Send, X } from 'lucide-react';
 import { Button } from './Button';
@@ -10,6 +10,7 @@ import {
   MAX_CHAT_IMAGE_BYTES,
   type ChatImageAttachment,
   type ChatMessage,
+  type FileTransferMode,
 } from '../lib/chatStorage';
 import {
   formatFileTransferBytes,
@@ -46,7 +47,7 @@ interface ChatPanelProps {
   isPersistent?: boolean;
   peerLabel?: string;
   onClose: () => void;
-  onSend: (input: { text?: string; image?: ChatImageAttachment; file?: File }) => Promise<void>;
+  onSend: (input: { text?: string; image?: ChatImageAttachment; file?: File; fileTransferMode?: FileTransferMode }) => Promise<void>;
   onAcceptFileTransfer: (messageId: string) => Promise<void>;
   onDeclineFileTransfer: (messageId: string) => Promise<void>;
 }
@@ -155,6 +156,41 @@ const getFileTransferStatsLabel = (message: ChatMessage) => {
   return `速度 ${formatFileTransferSpeed(transfer.bytesPerSecond)} · 剩余 ${formatFileTransferTimeRemaining(remainingSeconds)}`;
 };
 
+export function FileTransferModeSelector({
+  mode,
+  onChange,
+  disabled = false,
+}: {
+  mode: FileTransferMode;
+  onChange: (mode: FileTransferMode) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  return (
+    <fieldset className="mb-2 rounded-lg border border-gray-700 px-3 py-2" disabled={disabled} aria-describedby={`${id}-description`}>
+      <legend className="px-1 text-xs text-gray-300">文件传输模式</legend>
+      <div className="flex gap-4 text-xs text-gray-200">
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <input type="radio" name={id} value="encrypted" checked={mode === 'encrypted'} onChange={() => onChange('encrypted')} className="accent-blue-500" />
+          加密模式
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <input type="radio" name={id} value="fast" checked={mode === 'fast'} onChange={() => onChange('fast')} className="accent-blue-500" />
+          极速模式
+        </label>
+      </div>
+      <p id={`${id}-description`} className="mt-2 text-[11px] leading-relaxed text-gray-400">
+        {mode === 'fast'
+          ? '跳过额外文件加密，仍有 WebRTC 传输加密。实际速度取决于网络和设备。'
+          : '在 WebRTC 传输加密之上，额外加密文件内容。'}
+      </p>
+    </fieldset>
+  );
+}
+
+const getFileTransferModeLabel = (message: ChatMessage) =>
+  message.fileTransfer?.mode === 'fast' ? '极速模式' : '加密模式';
+
 export function ChatPanel({
   isOpen,
   isConnected,
@@ -172,6 +208,7 @@ export function ChatPanel({
   const setDraftText = useChatStore((state) => state.setDraftText);
   const [selectedImage, setSelectedImage] = useState<ChatImageAttachment | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileTransferMode, setFileTransferMode] = useState<FileTransferMode>('encrypted');
   const [previewImage, setPreviewImage] = useState<ChatImageAttachment | null>(null);
   const [error, setError] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -429,6 +466,7 @@ export function ChatPanel({
         text: draftText,
         image: selectedImage ?? undefined,
         file: selectedFile ?? undefined,
+        fileTransferMode: selectedFile ? fileTransferMode : undefined,
       });
       setSelectedImage(null);
       setSelectedFile(null);
@@ -565,6 +603,9 @@ export function ChatPanel({
                             <span className={cn('block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-500')}>
                               {formatAttachmentSize(message.file.size)}
                             </span>
+                            <span className={cn('block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
+                              {getFileTransferModeLabel(message)}
+                            </span>
                             {getFileTransferLabel(message) && (
                               <span className={cn('mt-1 block text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
                                 {getFileTransferLabel(message)}
@@ -588,6 +629,12 @@ export function ChatPanel({
                               </span>
                             </span>
                           </div>
+                          <p className={cn('mt-2 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
+                            {getFileTransferModeLabel(message)}
+                          </p>
+                          {message.fileTransfer?.mode === 'fast' && message.fileTransfer.status === 'offered' && !isMine && (
+                            <p className="mt-1 text-[11px] text-gray-400">跳过额外文件加密，仍有 WebRTC 传输加密。</p>
+                          )}
                           {getFileTransferLabel(message) && (
                             <p className={cn('mt-2 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
                               {getFileTransferLabel(message)}
@@ -688,6 +735,10 @@ export function ChatPanel({
                 <X className="h-3.5 w-3.5" />
               </Button>
             </div>
+          )}
+
+          {selectedFile && (
+            <FileTransferModeSelector mode={fileTransferMode} onChange={setFileTransferMode} disabled={isSending} />
           )}
 
           {(connectionIssue || error) && <p className="mb-2 text-xs text-amber-300">{connectionIssue || error}</p>}

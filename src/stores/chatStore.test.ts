@@ -212,6 +212,83 @@ describe('chatStore', () => {
     expect(useChatStore.getState().messages[0].file?.objectUrl).toBe('blob:download');
   });
 
+  it.each([undefined, 'encrypted', 'fast'] as const)('retains the offered transfer mode %s', (mode) => {
+    const { setConversationPeers, addIncomingFileOffer } = useChatStore.getState();
+    setConversationPeers('local-peer', 'remote-peer', 'mode-session');
+    addIncomingFileOffer({
+      type: 'CHAT_FILE_OFFER',
+      version: 1,
+      transferId: 'mode-transfer',
+      from: 'remote-peer',
+      mode,
+      message: {
+        id: 'mode-transfer',
+        kind: 'file',
+        createdAt: 456,
+        file: { mimeType: 'application/octet-stream', name: 'test.bin', size: 100 },
+      },
+    });
+    expect(useChatStore.getState().messages[0].fileTransfer?.mode).toBe(mode ?? 'encrypted');
+  });
+
+  it('keeps active byte progress in memory and persists transfer metadata and completion', () => {
+    const entries = new Map<string, string>();
+    const setItem = vi.fn((key: string, value: string) => entries.set(key, value));
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem,
+      removeItem: (key: string) => entries.delete(key),
+    });
+    try {
+      const { setConversationPeers, createLocalMessage, updateFileTransfer } = useChatStore.getState();
+      setConversationPeers('local-peer', 'remote-peer', 'progress-session', true);
+      createLocalMessage({
+        myPeerId: 'local-peer',
+        id: 'progress-transfer',
+        file: { mimeType: 'application/octet-stream', name: 'test.bin', size: 100 },
+        fileTransfer: { id: 'progress-transfer', status: 'waiting', bytesTransferred: 0 },
+      });
+      setItem.mockClear();
+      updateFileTransfer('progress-transfer', { status: 'transferring', bytesTransferred: 0 });
+      expect(setItem).toHaveBeenCalled();
+
+      setItem.mockClear();
+      for (let bytesTransferred = 1; bytesTransferred < 100; bytesTransferred += 1) {
+        updateFileTransfer('progress-transfer', { status: 'transferring', bytesTransferred });
+      }
+      expect(setItem).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages[0].fileTransfer).toMatchObject({
+        status: 'transferring', bytesTransferred: 99,
+      });
+
+      for (const patch of [
+        { saveMode: 'file-system' as const },
+        { savedPath: 'Documents/test.bin' },
+        { file: { name: 'renamed.bin' } },
+        { error: 'connection interrupted' },
+      ]) {
+        setItem.mockClear();
+        updateFileTransfer('progress-transfer', patch);
+        expect(setItem).toHaveBeenCalled();
+      }
+
+      setItem.mockClear();
+      updateFileTransfer('progress-transfer', { status: 'saved', bytesTransferred: 100, error: undefined });
+      expect(setItem).toHaveBeenCalled();
+      resetChatStore();
+      useChatStore.getState().setConversationPeers('local-peer', 'remote-peer', 'progress-session', true);
+      expect(useChatStore.getState().messages[0]).toMatchObject({
+        file: { name: 'renamed.bin' },
+        fileTransfer: {
+          status: 'saved', bytesTransferred: 100, saveMode: 'file-system', savedPath: 'Documents/test.bin',
+        },
+      });
+      expect(useChatStore.getState().messages[0].fileTransfer?.error).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('recreates transfer state when updating an existing file message without transfer metadata', () => {
     const { setConversationPeers, addIncomingWireMessage, updateFileTransfer } = useChatStore.getState();
 

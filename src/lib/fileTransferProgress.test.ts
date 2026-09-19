@@ -110,7 +110,7 @@ describe('fileTransferProgress', () => {
     expect(pendingChunks.size).toBe(0);
   });
 
-  it('publishes transfer progress only after time, byte, or completion thresholds', () => {
+  it('throttles active progress by time even on fast connections, while publishing completion', () => {
     const snapshot = {
       lastUpdateAt: 1_000,
       lastUpdateBytes: 2 * 1024 * 1024,
@@ -135,7 +135,7 @@ describe('fileTransferProgress', () => {
       totalBytes: 10 * 1024 * 1024,
       snapshot,
       now: 1_100,
-    })).toBe(true);
+    })).toBe(false);
 
     expect(shouldPublishFileTransferProgress({
       bytesTransferred: 10 * 1024 * 1024,
@@ -143,5 +143,16 @@ describe('fileTransferProgress', () => {
       snapshot,
       now: 1_100,
     })).toBe(true);
+  });
+
+  it('publishes the initial and empty-file progress immediately', () => {
+    for (const totalBytes of [0, 10 * 1024 * 1024]) {
+      expect(shouldPublishFileTransferProgress({
+        bytesTransferred: 0,
+        totalBytes,
+        snapshot: { lastUpdateAt: 1_000, lastUpdateBytes: 0 },
+        now: 1_000,
+      })).toBe(true);
+    }
   });
 });

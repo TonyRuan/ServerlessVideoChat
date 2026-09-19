@@ -10,6 +10,7 @@ export const MAX_CHAT_ATTACHMENT_NAME_CHARS = 255;
 export type ChatDirection = 'in' | 'out';
 export type ChatKind = 'text' | 'image' | 'file' | 'mixed';
 export type ChatStatus = 'sending' | 'sent' | 'received' | 'failed';
+export type FileTransferMode = 'encrypted' | 'fast';
 export type ChatFileTransferStatus =
   | 'waiting'
   | 'offered'
@@ -37,6 +38,7 @@ export interface ChatFileAttachment {
 
 export interface ChatFileTransfer {
   id: string;
+  mode?: FileTransferMode;
   status: ChatFileTransferStatus;
   bytesTransferred: number;
   startedAt?: number;

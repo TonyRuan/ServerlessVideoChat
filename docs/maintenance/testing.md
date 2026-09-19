@@ -35,6 +35,9 @@ npm test -- src/lib/callConnectionPolicy.test.ts
 npm test -- src/lib/callSession.test.ts
 npm test -- src/lib/fileTransferBinary.test.ts
 npm test -- src/lib/fileTransferFlow.test.ts
+npm test -- src/lib/fileTransferBackpressure.test.ts
+npm test -- src/lib/fileTransferTransport.test.ts
+npm test -- src/lib/fileTransferProgress.test.ts src/stores/chatStore.test.ts
 npm test -- src/lib/realtimeProtocol.test.ts
 npm test -- src/components/CallControls.test.tsx
 npm test -- src/components/ChatPanel.test.tsx
@@ -54,7 +57,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 For protocol, session, file-transfer flow, TURN, recovery, and stats helpers, test pure functions directly. Protocol tests should cover malformed, oversized, non-finite, stale, and wrong-peer payloads in addition to happy paths. Credential tests must verify expiry units, no-store behavior, malformed URL rejection, bounded TTL, and failure fallback without printing generated credential values.
 
+`fileTransferTransport.test.ts` exercises both file modes with real Web Crypto sessions, byte-for-byte transfers spanning multiple credit windows and a partial final chunk, early ACKs during send/drain, resume offsets, replayed acceptance at zero bytes, and coalesced credit publication. Progress/store tests cover time-based UI throttling, retained transfer mode, progress updates without history writes, and persisted completion. These tests establish protocol correctness; they do not measure real-network throughput or replace browser/Android QA.
+
+`fileTransferBackpressure.test.ts` covers high/low-water pacing, immediate event wakeup, a drain during listener setup, missed-event polling, close/error handling, cancellation, concurrent waits, and listener/timer cleanup. The pump/backpressure integration cases in `fileTransferTransport.test.ts` cancel a generation while its first chunk waits for browser drain, verify that no later chunk or progress update escapes, and resume from receiver-confirmed persisted offsets. They separately verify replay of an unpersisted first chunk and skipping a confirmed first chunk; a queued browser send alone is not proof that the receiver saved it.
+
 ## Browser Validation Notes
+
+For measured file-transfer results, benchmark scope, and excluded samples, see [file-transfer-performance.md](file-transfer-performance.md).
 
 The call page requests camera and microphone permission. Do not approve browser permission prompts unless the user explicitly authorizes it.
 
@@ -65,6 +74,8 @@ Common surfaces to validate when relevant:
 - Waiting state invite link and QR code: host opens `/call`, PeerJS becomes ready, and `myId` exists.
 - Compact diagnostics: collapsed panel shows only connection status; expanded panel distinguishes media, chat control, and file transports plus credential source/expiry.
 - Recovery: use fake media devices and two isolated browser contexts; verify the guest is the only replacement initiator and stale watchdog timers do not close a newer connection.
+- File modes: confirm encrypted is the default, fast requires peer capability support and matching acceptance, text/images stay encrypted, and transfer cards identify the selected mode. An old client must still support default encrypted transfers and require an update for fast mode.
+- File recovery/performance: compare the same file in both modes over a verified direct path and separately over TURN, check received bytes, and interrupt/reconnect a multi-window transfer. Verify progress does not reset or stall and record measured throughput before claiming a speed gain. Validate direct disk saving and the browser memory fallback separately; an Android release also requires the Android checks above.
 - TURN: verify normal `on` mode separately from `turn=force`; an enabled TURN status is not proof of relay, so confirm the selected candidate type in stats.
 - Bottom controls: fixed overlay should not cover waiting-state content on small screens.
 - Hidden desktop/mobile control variants must be inert and excluded from the accessibility tree.

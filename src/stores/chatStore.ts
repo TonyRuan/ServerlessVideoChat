@@ -240,6 +240,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       file: payload.message.file,
       fileTransfer: {
         id: payload.transferId,
+        mode: payload.mode ?? 'encrypted',
         status: 'offered',
         bytesTransferred: 0,
       },
@@ -257,9 +258,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   updateFileTransfer: (id, input) => {
     const state = get();
     const { file, ...transferPatch } = input;
+    let shouldPersist = false;
     const messages = state.messages.map((message) => {
       if (message.id !== id) return message;
 
+      const isProgressOnly = message.fileTransfer?.status === 'transferring'
+        && (transferPatch.status === undefined || transferPatch.status === 'transferring')
+        && file === undefined
+        && Object.keys(transferPatch).every((key) =>
+          ['status', 'bytesTransferred', 'startedAt', 'updatedAt', 'bytesPerSecond'].includes(key)
+        );
+      // Active byte counts are transient; only durable changes need to rewrite history.
+      shouldPersist = !isProgressOnly;
       const nextMessage = {
         ...message,
         file: file ? { ...message.file, ...file } as ChatFileAttachment : message.file,
@@ -273,7 +283,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return nextMessage;
     });
     set({ messages });
-    persistState(get());
+    if (shouldPersist) persistState(get());
   },
   updateMessageStatus: (id, status) => {
     const state = get();

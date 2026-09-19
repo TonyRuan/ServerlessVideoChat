@@ -1,7 +1,18 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChatMessage } from '../lib/chatStorage';
 import { useChatStore } from '../stores/chatStore';
-import { ChatPanel } from './ChatPanel';
+import { ChatPanel, FileTransferModeSelector } from './ChatPanel';
+
+vi.mock('../stores/chatStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../stores/chatStore')>();
+  // SSR normally reads Zustand's initial snapshot; render each test's supplied state instead.
+  const useChatStore = Object.assign(
+    <T,>(selector: (state: ReturnType<typeof actual.useChatStore.getState>) => T) => selector(actual.useChatStore.getState()),
+    actual.useChatStore
+  );
+  return { ...actual, useChatStore };
+});
 
 const renderPanel = () =>
   renderToStaticMarkup(
@@ -63,5 +74,79 @@ describe('ChatPanel accessibility', () => {
     expect(markup).toContain('输入消息，设备上线后自动发送');
     expect(markup.match(/<textarea[^>]*placeholder="输入消息，设备上线后自动发送"[^>]*>/)?.[0]).not.toContain('disabled');
     expect(markup).toContain('title="加入待发送队列"');
+  });
+
+  it('keeps the file mode selector out of the empty message composer', () => {
+    expect(renderPanel()).not.toContain('文件传输模式');
+  });
+
+  it('explains a received fast transfer before the accept action', () => {
+    useChatStore.setState({ messages: [makeFileMessage('fast')] });
+
+    const markup = renderPanel();
+
+    expect(markup).toContain('极速模式');
+    expect(markup).toContain('跳过额外文件加密，仍有 WebRTC 传输加密。');
+    expect(markup.indexOf('跳过额外文件加密')).toBeLessThan(markup.indexOf('>接受</button>'));
+    expect(markup).toContain('>拒绝</button>');
+  });
+
+  it('labels legacy file offers as encrypted when no mode was recorded', () => {
+    useChatStore.setState({ messages: [makeFileMessage()] });
+
+    const markup = renderPanel();
+
+    expect(markup).toContain('加密模式');
+    expect(markup).not.toContain('极速模式');
+    expect(markup).toContain('>接受</button>');
+  });
+
+  it('keeps the mode visible on completed downloadable file cards', () => {
+    const message = makeFileMessage('fast');
+    message.direction = 'out';
+    message.file!.objectUrl = 'blob:received-file';
+    message.fileTransfer!.status = 'sent';
+    useChatStore.setState({ messages: [message] });
+
+    const markup = renderPanel();
+
+    expect(markup).toContain('download="report.zip"');
+    expect(markup).toContain('极速模式');
+    expect(markup).not.toContain('>接受</button>');
+  });
+});
+
+const makeFileMessage = (mode?: 'encrypted' | 'fast'): ChatMessage => ({
+  id: 'file-message',
+  conversationId: 'test-conversation',
+  direction: 'in',
+  kind: 'file',
+  file: { name: 'report.zip', mimeType: 'application/zip', size: 1024 },
+  fileTransfer: { id: 'transfer-1', status: 'offered', bytesTransferred: 0, mode },
+  createdAt: 1_000,
+  status: 'received',
+});
+
+describe('FileTransferModeSelector', () => {
+  it('groups both modes under a visible accessible label and explains extra encryption', () => {
+    const markup = renderToStaticMarkup(<FileTransferModeSelector mode="encrypted" onChange={() => undefined} />);
+
+    expect(markup).toContain('<legend');
+    expect(markup).toContain('文件传输模式</legend>');
+    expect(markup).toContain('aria-describedby=');
+    expect(markup).toContain('加密模式</label>');
+    expect(markup).toContain('极速模式</label>');
+    expect(markup.match(/<input[^>]*value="encrypted"[^>]*>/)?.[0]).toContain('checked');
+    expect(markup.match(/<input[^>]*value="fast"[^>]*>/)?.[0]).not.toContain('checked');
+    expect(markup).toContain('在 WebRTC 传输加密之上，额外加密文件内容。');
+  });
+
+  it('describes the selected fast mode accurately and locks selection during sending', () => {
+    const markup = renderToStaticMarkup(<FileTransferModeSelector mode="fast" onChange={() => undefined} disabled />);
+
+    expect(markup.match(/<fieldset[^>]*>/)?.[0]).toContain('disabled');
+    expect(markup.match(/<input[^>]*value="fast"[^>]*>/)?.[0]).toContain('checked');
+    expect(markup).toContain('跳过额外文件加密，仍有 WebRTC 传输加密。');
+    expect(markup).toContain('实际速度取决于网络和设备。');
   });
 });

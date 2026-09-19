@@ -19,7 +19,9 @@
   - 支持文字、JPG、PNG、WebP、GIF，单张图片上限 10MiB。
   - 支持点击选择、从剪贴板粘贴、拖拽上传图片，单击图片可放大查看，桌面端可拖动聊天窗口位置。
   - 非图片文件最大 2GiB；接收端确认并选择保存位置后才开始传输，不支持直接写盘的浏览器使用最多 10MiB 的内存下载回退。
-  - 文件数据使用独立可靠 DataConnection、256KiB 二进制 AES-GCM 分片和 1MiB 接收端信用窗口；断线后按接收端已写入偏移恢复，收到最终保存确认后才标记发送完成。
+  - 文件数据使用独立可靠 DataConnection 和 256KiB 二进制分片。默认加密模式使用 AES-GCM 和 1MiB 接收端信用窗口；可单独选择“极速模式”，跳过文件字节的应用层加密并使用 8MiB 窗口。WebRTC 自带的 DTLS 加密仍保留，文字、图片和文件控制消息仍使用 AES-GCM。
+  - 极速模式要求双方客户端支持并确认相同模式；旧客户端仍可使用默认加密模式，使用极速模式需刷新更新。断线后按接收端已写入偏移恢复，收到最终保存确认后才标记发送完成。
+  - 接收端写入后异步合并信用确认，传输进度最多每 250ms 刷新一次；设备会话的纯进度更新不反复写入聊天历史。实际速度仍需结合直连/TURN 链路和接收端写盘性能测量。
 - **长期设备会话（首版）**：
   - 可通过二维码或粘贴链接配对手机与电脑；设备身份和配对记录保存在本机。
   - 已配对设备可以设置仅在本机生效的自定义名称，改名后在设备列表和持久会话标题中保持一致。
@@ -69,6 +71,7 @@ src/
 │   ├── chatProtocol.ts   # 聊天和 session resume wire payload 转换和校验
 │   ├── fileTransferBinary.ts # 无 base64 的版本化文件二进制帧
 │   ├── fileTransferFlow.ts # 接收端信用窗口、ACK 和恢复偏移规则
+│   ├── fileTransferTransport.ts # 加密/极速文件模式、有界发送和合并信用确认
 │   ├── realtimeProtocol.ts # 画质和爱心控制消息严格校验
 │   ├── callSession.ts    # URL hash session 解析、生成和邀请链接构造
 │   ├── buildInfo.ts      # 构建版本和编译时间格式化
@@ -175,6 +178,6 @@ Android 调试 APK 的完整工具链、构建和模拟器验证见 [`docs/maint
 
 ## 🤖 供 AI 助手参考的上下文 (AI Context)
 - **WebRTC 连接流**：guest 是唯一拨号方，host 只接受连接。连接元数据必须同时匹配 session、相反角色和实际 `connection.peer`；连接建立上限 15 秒、`disconnected` 宽限 5 秒，guest 使用六次带抖动退避重拨，host 回到等待状态。
-- **数据同步**：连点爱心、画质切换、session、聊天和文件控制走 `control` DataConnection；加密文件字节走独立 `bulk` DataConnection。聊天层先交换临时 ECDH 公钥，再发送 AES-GCM 密文。
+- **数据同步**：连点爱心、画质切换、session、聊天和文件控制走 `control` DataConnection；文件字节走独立 `bulk` DataConnection。聊天层先交换临时 ECDH 公钥，文字、图片和文件控制使用 AES-GCM。文件默认同样加密，双方协商后的极速模式仅跳过文件字节的额外 AES-GCM，保留 WebRTC DTLS 加密。
 - **TURN 策略**：默认初始 PeerJS 配置包含两组 STUN 和完整 TURN 候选，动态短期凭据优先、静态配置回退。第一次媒体恢复保持 `on`，重复建立失败且 TURN 可用时，后续连接升级为 relay-only `force`。诊断中的“TURN 已启用”不等于选中链路正在中继。
 - **环境隔离**：本项目同时兼顾了根域名部署（Cloudflare Pages）和子路径部署（GitHub Pages），在修改路由或构建配置时需同时考虑这两种情况。
