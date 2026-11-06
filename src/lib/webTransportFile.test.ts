@@ -3,7 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import type { EncryptedBinaryChatEnvelope } from './chatCrypto';
 import { createLightningRoom, getLightningAvailability, getLightningRelayUrl, LIGHTNING_MAX_FRAME_BYTES, openLightningChannel } from './webTransportFile';
 
-vi.mock('@capacitor/core', () => ({ Capacitor: { isNativePlatform: vi.fn(() => false) } }));
+vi.mock('@capacitor/core', () => ({ Capacitor: { isNativePlatform: vi.fn(() => false), getPlatform: vi.fn(() => 'web') } }));
 const room = 'a'.repeat(64);
 const ciphertext: EncryptedBinaryChatEnvelope = { type: 'CHAT_CIPHER_BINARY', version: 1, iv: new Uint8Array(12).fill(3), data: new Uint8Array(32).fill(9) };
 function wire(payload = ciphertext) {
@@ -32,6 +32,7 @@ class MockTransport {
 beforeEach(() => {
   MockTransport.instances = []; MockTransport.readyByte = 82; MockTransport.hangReady = false;
   vi.mocked(Capacitor.isNativePlatform).mockReturnValue(false);
+  vi.mocked(Capacitor.getPlatform).mockReturnValue('web');
   vi.stubEnv('VITE_WEBTRANSPORT_URL', 'https://relay.example/file');
   vi.stubEnv('VITE_WEBTRANSPORT_CERT_SHA256', '');
   vi.stubEnv('DEV', true);
@@ -41,14 +42,31 @@ beforeEach(() => {
 afterEach(() => { for (const instance of MockTransport.instances) instance.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('lightning availability', () => {
-  it('requires configured HTTPS, browser support, secure context and web platform', () => {
+  it('requires configured HTTPS, WebTransport and a secure context', () => {
     expect(getLightningAvailability()).toEqual({ available: true });
-    vi.mocked(Capacitor.isNativePlatform).mockReturnValue(true);
-    expect(getLightningAvailability().available).toBe(false);
-    vi.mocked(Capacitor.isNativePlatform).mockReturnValue(false);
     vi.stubGlobal('isSecureContext', false);
     expect(getLightningAvailability().available).toBe(false);
     vi.stubGlobal('isSecureContext', true); vi.stubGlobal('WebTransport', undefined);
+    expect(getLightningAvailability().available).toBe(false);
+  });
+  it('enables Android only when its WebView provides WebTransport and HTTPS', async () => {
+    vi.mocked(Capacitor.isNativePlatform).mockReturnValue(true);
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('android');
+    vi.stubEnv('DEV', false);
+    expect(getLightningAvailability()).toEqual({ available: true });
+    const channel = await openLightningChannel({ room, role: 'send' });
+    await channel.send(ciphertext);
+    expect(MockTransport.instances[0].options).toBeUndefined();
+    expect(MockTransport.instances[0].writes[1]).toEqual(wire());
+    channel.close();
+    vi.stubGlobal('WebTransport', undefined);
+    expect(getLightningAvailability()).toEqual({ available: false, reason: expect.stringContaining('Android System WebView') });
+    vi.stubGlobal('WebTransport', MockTransport); vi.stubGlobal('isSecureContext', false);
+    expect(getLightningAvailability().available).toBe(false);
+  });
+  it('does not advertise unsupported native platforms', () => {
+    vi.mocked(Capacitor.isNativePlatform).mockReturnValue(true);
+    vi.mocked(Capacitor.getPlatform).mockReturnValue('ios');
     expect(getLightningAvailability().available).toBe(false);
   });
   it.each(['', 'http://relay.example/file', 'https://user:pass@relay.example/file', 'https://relay.example/file?room=secret', 'https://relay.example/file#fragment', 'not a url'])('rejects unsafe configured endpoint %s', value => {

@@ -27,10 +27,18 @@ export function getLightningRelayUrl(): string | null {
 }
 
 export function getLightningAvailability(): { available: boolean; reason?: string } {
-  if (Capacitor.isNativePlatform()) return { available: false, reason: '实验闪电模式目前仅支持网页版' };
+  const native = Capacitor.isNativePlatform();
+  if (native && Capacitor.getPlatform() !== 'android') {
+    return { available: false, reason: '实验闪电模式目前支持网页版和安卓版' };
+  }
   if (!getLightningRelayUrl()) return { available: false, reason: '闪电中转服务尚未配置' };
-  if (!globalThis.isSecureContext || typeof globalThis.WebTransport !== 'function') {
+  if (!globalThis.isSecureContext) {
     return { available: false, reason: '当前浏览器不支持闪电模式，请使用支持 WebTransport 的浏览器和 HTTPS 页面' };
+  }
+  if (typeof globalThis.WebTransport !== 'function') {
+    return { available: false, reason: native
+      ? '当前 Android System WebView 不支持闪电模式，请更新系统 WebView 后重试'
+      : '当前浏览器不支持闪电模式，请使用支持 WebTransport 的浏览器和 HTTPS 页面' };
   }
   return { available: true };
 }

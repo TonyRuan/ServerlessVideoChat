@@ -1,11 +1,11 @@
 # 实验闪电模式（WebTransport）
 
-网页版新增第三种文件模式 `lightning`，界面名称为“实验闪电模式”。默认仍为加密模式；现有极速模式不变。闪电模式经独立 HTTP/3 WebTransport 中转转发 AES-GCM 密文，服务器不落盘保存文件，也没有浏览器聊天会话的解密密钥。音视频、文字、文件邀请、接受、信用窗口、完成确认和错误仍走现有 WebRTC 通道。
+网页版和支持 WebTransport 的安卓版提供第三种文件模式 `lightning`，界面名称为“实验闪电模式”。默认仍为加密模式；现有极速模式不变。闪电模式经独立 HTTP/3 WebTransport 中转转发 AES-GCM 密文，服务器不落盘保存文件，也没有浏览器聊天会话的解密密钥。音视频、文字、文件邀请、接受、信用窗口、完成确认和错误仍走现有 WebRTC 通道。
 
 ## 可用性与兼容性
 
 - 必须配置 `VITE_WEBTRANSPORT_URL=https://<relay-host>/file`，使用安全上下文且浏览器提供 WebTransport。
-- 本轮仅开放网页版；Capacitor 原生平台不宣告闪电能力。
+- 网页版和 Android 按运行时能力开放；Android WebView 缺少 WebTransport 时提示更新系统 WebView。其他 Capacitor 原生平台暂不宣告闪电能力。
 - 控件显示本地不可用原因或对方不支持的原因；发送时再次校验。配置了地址不代表服务一定在线，连接失败会显示错误。
 - 先发送旧版两模式能力消息，再给支持扩展的新客户端发送三模式能力消息，保留旧版兼容性。
 - 闪电 offer 使用 version 3，显式 `mode: lightning` 和 256-bit 随机 `lightningRoom`。接收与发送必须同意相同模式。房间凭据只在加密控制消息和 WT 握手中发送，不进入 URL、聊天历史或服务日志。
@@ -20,7 +20,7 @@
 
 实验模式暂不自动续传，也不静默降级。WT 建连/配对约 20 秒超时，流读写约 30 秒超时；发送端信用或完成确认长期无进展约 45 秒后失败。控制连接重置、挂断、页面卸载、拒绝和错误会清理关联任务与流，失效异步回调不得覆盖失败状态。正常 WebRTC 模式继续使用原有重连续传策略。闪电失败后用户可重新发送，或选择原有模式。
 
-文件大小与保存能力限制沿用原有策略：文件最大 2 GiB，支持文件选择器时流式保存；无直接磁盘保存能力时保留 10 MiB 内存限制。
+文件大小与保存能力限制沿用原有策略：文件最大 2 GiB，网页支持文件选择器时流式保存；无直接磁盘保存能力的网页保留 10 MiB 内存限制。Android 使用已有原生 Filesystem 分块写入 Documents/SVC，不受该网页内存回退上限约束。
 
 ## 部署与本地验证
 
@@ -56,8 +56,10 @@
 
 ## 公网运行配置（2026-11-06）
 
+2026-11-07 Android `0.0.16`（versionCode 5）已在 API 35 / WebView 124 模拟器完成真实公网双向传输：网页向 Android 原生磁盘保存 16MiB、Android 经系统文件选择器向网页发送 8MiB，大小与 SHA-256 均一致；WT 真实建立、RTC bulk 零文件字节。接收部分文件后中断 WT，双方失败且原生临时文件删除。具体升级、兼容性和测试边界见 [android.md](android.md)。
+
 - 中转地址：`https://lightning.uavserver.cn/file`。Cloudflare DNS-only A 记录指向 `39.108.122.44`，TTL 300；公网 UDP 443 已验证可达。不要开启普通 Cloudflare HTTP 代理。
-- 独立服务：`svc-webtransport.service`，可执行文件 `/opt/svc-webtransport/svc-webtransport-relay`，配置 `/etc/svc-webtransport/relay.env`。仅允许 `https://chat.uavserver.cn` 和 `https://serverlessvideochat.pages.dev`；随机 Pages 预览子域名不在白名单。
+- 独立服务：`svc-webtransport.service`，可执行文件 `/opt/svc-webtransport/svc-webtransport-relay`，配置 `/etc/svc-webtransport/relay.env`。允许 `https://chat.uavserver.cn`、`https://serverlessvideochat.pages.dev`；2026-11-07 为 Android 增加精确来源 `https://localhost`。随机 Pages 预览子域名不在白名单，Origin 不代表应用身份认证。
 - TLS：Let's Encrypt 公信证书，初次有效期截至 2027-02-04。完整证书链和私钥保存在 `/etc/svc-webtransport/certs/`，权限 root:svc-webtransport 0640。ACME 私有状态位于 `/var/lib/svc-webtransport/acme`，不得提交或下载到公开构建产物。
 - 续期：lego 5.6.0，`svc-webtransport-renew.timer` 每日两次检查；实际续期后安装 hook 重启中转。TCP 80 必须保持可达以完成 HTTP-01，验证时才临时监听；原 TCP 443 和 TURN 服务继续独立运行。
 - 为消除 quic-go UDP 缓冲警告，`/etc/sysctl.d/90-svc-webtransport.conf` 设置 `net.core.rmem_max=7500000`、`net.core.wmem_max=7500000`，原值均为 212992。仅调整最大缓冲上限，未重启现有 DSH/coturn 服务。

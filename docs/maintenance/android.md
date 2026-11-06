@@ -68,9 +68,29 @@ Use the `ARrecord_API35` emulator and derive tap coordinates from a fresh UI hie
 
 Do not grant camera or microphone permissions during this smoke test. Text-only device pairing does not need them. QR scanning needs camera permission and should be tested only when permission testing is explicitly in scope.
 
+## Experimental lightning files
+
+Android supports the same optional WebTransport lightning mode as the website when its System WebView exposes `WebTransport` in the secure `https://localhost` context. Capability detection is runtime-based; an unsupported WebView shows an update instruction and does not advertise lightning support. Other native platforms remain disabled.
+
+Production relay `WT_ORIGINS` must include exactly `https://localhost` alongside the two production website origins. This is an origin allowlist, not app attestation. File content remains AES-GCM encrypted, room capabilities stay in encrypted controls/stream handshakes, and normal public TLS validation is retained. No WebView flags, certificate bypass or extra Android permissions are required.
+
+Files use the existing native `Filesystem` writer: each received chunk is appended to `Documents/SVC`, acknowledged after writing, and partial files are deleted on failure. This is not the browser's 10MiB memory fallback. The existing 2GiB protocol limit remains; it is not a guarantee of available storage or all-device large-file performance. The experimental channel fails explicitly and does not resume or switch transport silently.
+
 ## Current Platform Limitations
 
 - Android has no persisted `FileSystemFileHandle`; non-image files remain online-only.
-- The WebView does not provide desktop `showSaveFilePicker`. Receive flows use the existing memory fallback and therefore reject files over 10MiB.
+- The WebView does not provide desktop `showSaveFilePicker`. Android receives through the native chunk writer into `Documents/SVC`; directory picking is not available. Older Android versions may request storage permission.
 - Pairing/history storage is local to the WebView app data and is lost if Android app data is cleared or the app is uninstalled.
 - There is no background reconnect after the OS suspends or kills the app.
+
+## 2026-11-07 lightning APK validation
+
+- Debug APK `0.0.16`, versionCode `5`; upgrade installed over `0.0.14` without clearing app data. The existing identity and four pairing records remained identical.
+- Android 15/API 35 emulator, System WebView `124.0.6367.219`, secure `https://localhost`. Public WebTransport pairing and a 1028-byte frame passed with normal DNS/TLS and no WebView feature flags.
+- Production website `0.0.15` to Android: 16MiB saved by the actual native Filesystem writer into `Documents/SVC`, then checked using the device's file size and SHA-256. Android to website: 8MiB selected with the real Android system file chooser, received into browser OPFS and SHA-256 verified. Both sides established WebTransport; RTC bulk carried zero file bytes.
+- Closing only the test sender's WebTransport after the native receiver wrote 256KiB produced failure on both sides and deleted the native partial file. No false completion or page runtime errors.
+- A test-only missing-WebTransport injection disabled the Android lightning option and showed the System WebView update instruction. The app was force-stopped/relaunched afterwards to remove the injection. This does not substitute for testing a physical old WebView device.
+- A newly paired test device was renamed through the UI, then retained its name after saving, waiting six seconds and force-stopping/relaunching. The test pair was removed and the original four records/identity retained. An initial immediate-force-stop attempt did not retain the new name; localStorage updates must not be described as crash-durable synchronous disk commits.
+- `npm test` passed 329 tests across 44 files; type checking, lint, web build, Capacitor sync and Gradle `assembleDebug` passed. APK signature verified as the existing Android debug signer. This is a locally installable debug build, not a store-signed release.
+- Fixture preparation failures were kept separate: desktop-only `turn=off` did not establish the emulator path; normal `turn=on` succeeded. One extended system-file-chooser interaction lost the WebRTC control connection before sending; a new session with normal quick selection passed. That connection-loss cause remains unproven, and background operation/resume is not claimed.
+- Raw QA evidence is retained locally outside Git under `C:/Users/ruanj/AppData/Local/Temp/svc-android-lightning-20261107/`; installable APK and compact release evidence are in ignored `output/apk/`. Physical-phone performance and all Android/WebView versions were not tested.

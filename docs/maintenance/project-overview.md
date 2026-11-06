@@ -28,7 +28,7 @@ Home does not request camera or microphone permission on page load. Its media bu
 
 ## User-Facing Capabilities
 
-- Optional web-only experimental lightning file mode via an independently configured WebTransport relay; file contents retain application AES-GCM, while control messages use WebRTC. Unavailable clients show a reason. See `webtransport.md` for deployment and lifecycle limits.
+- Optional experimental lightning file mode on the web and supported Android WebViews via an independently configured WebTransport relay; file contents retain application AES-GCM, while control messages use WebRTC. Unavailable clients show a reason. Android uses its existing native file writer. See `webtransport.md` for deployment and lifecycle limits.
 
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.

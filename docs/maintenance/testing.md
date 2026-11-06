@@ -65,6 +65,8 @@ For protocol, session, file-transfer flow, TURN, recovery, and stats helpers, te
 
 For experimental lightning, run `src/lib/webTransportFile.test.ts` alongside the protocol/transport/UI tests, and `go test ./...` in `relay/webtransport`. Real browser QA must verify the new mode performs WT `/file` traffic, persists exact bytes, and receives completion; also test missing browser capability, relay loss, and encrypted/fast regressions. See `webtransport.md`.
 
+For Android lightning, install the APK as an upgrade, verify actual WebView support and `https://localhost` origin, and test both production web-to-Android and Android-to-web. At least one download must exceed 10MiB and use the real native writer, with a device-side file hash rather than a shim. Exercise the system file chooser for upload, partial-file deletion on interruption, missing-WebTransport UI, and pairing persistence across restart. Use default `turn=on` for emulator/host interop; do not assume they share a host ICE path. Keep connection-establishment and fixture failures separate from verified transfers.
+
 For measured file-transfer results, benchmark scope, and excluded samples, see [file-transfer-performance.md](file-transfer-performance.md).
 
 The call page requests camera and microphone permission. Do not approve browser permission prompts unless the user explicitly authorizes it.
