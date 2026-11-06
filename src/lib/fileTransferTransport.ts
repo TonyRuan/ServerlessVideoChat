@@ -6,7 +6,7 @@ import { advanceFileTransferWindow, canSendFileChunk, type FileTransferSendWindo
 
 export const FAST_FILE_TRANSFER_CREDIT_BYTES = 8 * 1024 * 1024;
 export const getFileTransferCreditBytes = (mode: FileTransferMode) => (
-  mode === 'fast' ? FAST_FILE_TRANSFER_CREDIT_BYTES : 1024 * 1024
+  mode === 'fast' || mode === 'lightning' ? FAST_FILE_TRANSFER_CREDIT_BYTES : 1024 * 1024
 );
 
 export function createFileTransferResumePayloads(
@@ -34,6 +34,7 @@ export async function decodeFileTransferPayload(
   session: ChatCryptoSession,
   peer: string,
   acceptedMode: (transferId: string) => FileTransferMode | undefined,
+  transport: 'webrtc' | 'webtransport' = 'webrtc',
 ) {
   const encrypted = isEncryptedBinaryChatEnvelope(data);
   const bytes = encrypted
@@ -42,7 +43,8 @@ export async function decodeFileTransferPayload(
       : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
   if (!bytes) return null;
   const frame = decodeFileChunkFrame(bytes);
-  if (frame.from !== peer || acceptedMode(frame.transferId) !== (encrypted ? 'encrypted' : 'fast')) return null;
+  const expectedMode = transport === 'webtransport' ? 'lightning' : encrypted ? 'encrypted' : 'fast';
+  if ((transport === 'webtransport' && !encrypted) || frame.from !== peer || acceptedMode(frame.transferId) !== expectedMode) return null;
   return frame;
 }
 

@@ -64,6 +64,8 @@ import {
 } from '../lib/fileTransferProgress';
 import type { BinaryFileChunkFrame } from '../lib/fileTransferBinary';
 import { waitForFileDataChannelBuffer } from '../lib/fileTransferBackpressure';
+import { createLightningRoom, getLightningAvailability, openLightningChannel, type LightningChannel } from '../lib/webTransportFile';
+import { isEncryptedBinaryChatEnvelope } from '../lib/chatCrypto';
 import {
   createFileCreditPublisher,
   createFileTransferResumePayloads,
@@ -150,6 +152,10 @@ const EMPTY_TRANSPORT_DIAGNOSTIC: TransportDiagnosticSnapshot = {
 };
 
 interface OutgoingFileTransferState {
+  lightningRoom?: string;
+  lightningChannel?: Promise<LightningChannel>;
+  lightningAbort?: AbortController;
+  lightningLastActivity?: number;
   file: File;
   messageId: string;
   isStarted: boolean;
@@ -163,6 +169,8 @@ interface OutgoingFileTransferState {
 }
 
 interface IncomingFileTransferState {
+  lightningChannel?: LightningChannel;
+  lightningAbort?: AbortController;
   offer: WireChatFileOfferPayload;
   bytesReceived: number;
   lastProgressUpdateAt: number;
@@ -327,6 +335,7 @@ export default function CallPage() {
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isDataConnected, setIsDataConnected] = useState(false);
   const [isChatSecure, setIsChatSecure] = useState(false);
+  const [remoteLightningSupport, setRemoteLightningSupport] = useState(false);
   const [conversationPeerId, setConversationPeerId] = useState<string | null>(
     remotePeerId ?? pairedDevice?.remotePeerId ?? null
   );
@@ -352,6 +361,7 @@ export default function CallPage() {
   const bulkWatchdogCleanupRef = useRef<(() => void) | null>(null);
   const chatCryptoSessionRef = useRef<ChatCryptoSession | null>(null);
   const remoteFastFileSupportRef = useRef(false);
+  const remoteLightningSupportRef = useRef(false);
   const chatCryptoSessionPromiseRef = useRef<Promise<ChatCryptoSession> | null>(null);
   const chatCryptoPublicKeySentRef = useRef(false);
   const callSessionRef = useRef(callSession);
@@ -591,12 +601,40 @@ export default function CallPage() {
   }, [ensureChatCryptoSession]);
 
   const resumeIncomingFileTransfer = useCallback(async (transferId: string, transfer: IncomingFileTransferState) => {
+    if (transfer.offer.mode === 'lightning') return;
     for (const payload of createFileTransferResumePayloads(
       transferId, myId, transfer.bytesReceived, transfer.offer.mode ?? 'encrypted', transfer.saveMode,
     )) {
       await sendFileControlPayload(payload);
     }
   }, [myId, sendFileControlPayload]);
+
+  const failLightningTransfer = useCallback((transferId: string, error = '闪电通道中断，请重新发送或选择其他模式') => {
+    const outgoing = outgoingFileTransfersRef.current.get(transferId);
+    const incoming = incomingFileTransfersRef.current.get(transferId);
+    if (outgoing?.mode !== 'lightning' && incoming?.offer.mode !== 'lightning') return;
+    outgoingFileTransfersRef.current.delete(transferId);
+    incomingFileTransfersRef.current.delete(transferId);
+    incomingFileOffersRef.current.delete(transferId);
+    outgoing?.lightningAbort?.abort();
+    incoming?.lightningAbort?.abort();
+    incoming?.lightningChannel?.close();
+    void incoming?.writable?.abort?.().catch(() => undefined);
+    updateFileTransfer(transferId, { status: 'failed', error });
+    void sendFileControlPayload(createWireChatFileError(transferId, myId, error.slice(0, 240))).catch(() => undefined);
+  }, [myId, sendFileControlPayload, updateFileTransfer]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      for (const [id, transfer] of outgoingFileTransfersRef.current) {
+        if (transfer.mode === 'lightning' && transfer.accepted && now - (transfer.lightningLastActivity ?? now) > 45000) {
+          failLightningTransfer(id, '闪电传输等待超时，请重新发送或选择其他模式');
+        }
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [failLightningTransfer]);
 
   const handleIncomingFileChunk = useCallback(async (payload: BinaryFileChunkFrame) => {
     const transfer = incomingFileTransfersRef.current.get(payload.transferId);
@@ -616,6 +654,7 @@ export default function CallPage() {
 
       if (transfer.writable) {
         await transfer.writable.write(payload.data);
+        if (incomingFileTransfersRef.current.get(payload.transferId) !== transfer || transfer.lightningAbort?.signal.aborted) return;
       } else {
         transfer.chunks?.push(payload.data);
       }
@@ -646,6 +685,7 @@ export default function CallPage() {
 
       if (transfer.writable) {
         await transfer.writable.close();
+        if (incomingFileTransfersRef.current.get(payload.transferId) !== transfer || transfer.lightningAbort?.signal.aborted) return;
         updateFileTransfer(payload.transferId, {
           status: 'saved',
           bytesTransferred: transfer.bytesReceived,
@@ -676,8 +716,13 @@ export default function CallPage() {
         pendingFileCompletionsRef.current.delete(payload.transferId);
       } catch {
         // Completion is retried after the control channel reconnects.
+      } finally {
+        transfer.lightningChannel?.close();
       }
     } catch (err) {
+      if (incomingFileTransfersRef.current.get(payload.transferId) !== transfer) return;
+      transfer.lightningAbort?.abort();
+      transfer.lightningChannel?.close();
       await transfer.writable?.abort?.().catch(() => undefined);
       incomingFileTransfersRef.current.delete(payload.transferId);
       incomingFileOffersRef.current.delete(payload.transferId);
@@ -697,6 +742,29 @@ export default function CallPage() {
     }
   }, [myId, sendFileControlPayload, updateFileTransfer]);
 
+  const receiveLightningFile = useCallback(async (transferId: string, transfer: IncomingFileTransferState, session: ChatCryptoSession) => {
+    try {
+      if (incomingFileTransfersRef.current.get(transferId) !== transfer || chatCryptoSessionRef.current !== session) return;
+      if (!transfer.offer.lightningRoom) throw new Error('闪电传输请求无效');
+      transfer.lightningAbort = new AbortController();
+      const channel = await openLightningChannel({ room: transfer.offer.lightningRoom, role: 'receive', signal: transfer.lightningAbort.signal });
+      transfer.lightningChannel = channel;
+      const isCurrent = () => incomingFileTransfersRef.current.get(transferId) === transfer && chatCryptoSessionRef.current === session;
+      if (!isCurrent()) { channel.close(); return; }
+      await channel.receive(async envelope => {
+        if (!isCurrent()) return;
+        const frame = await decodeFileTransferPayload(envelope, session, transfer.offer.from,
+          id => id === transferId ? 'lightning' : undefined, 'webtransport');
+        if (!isCurrent()) return;
+        if (!frame) throw new Error('闪电文件分片校验失败');
+        await handleIncomingFileChunk(frame);
+      });
+      if (incomingFileTransfersRef.current.get(transferId) === transfer) failLightningTransfer(transferId);
+    } catch (err) {
+      failLightningTransfer(transferId, err instanceof Error ? err.message : '闪电接收失败，请重新发送');
+    }
+  }, [failLightningTransfer, handleIncomingFileChunk]);
+
   const startOutgoingFileTransfer = useCallback(async function startTransfer(transferId: string) {
     const transfer = outgoingFileTransfersRef.current.get(transferId);
     const conn = bulkDataConnRef.current;
@@ -707,7 +775,7 @@ export default function CallPage() {
     }
     transfer.needsPump = false;
 
-    if (!conn?.open || !myId) {
+    if ((transfer.mode !== 'lightning' && !conn?.open) || !myId) {
       transfer.isStarted = false;
       return;
     }
@@ -722,13 +790,36 @@ export default function CallPage() {
     transfer.runId = runId;
     const isCurrent = () => transfer.runId === runId
       && outgoingFileTransfersRef.current.get(transferId) === transfer
-      && bulkDataConnRef.current === conn
+      && (transfer.mode === 'lightning' || bulkDataConnRef.current === conn)
       && chatCryptoSessionRef.current === session;
 
     try {
+      if (transfer.mode === 'lightning' && !transfer.lightningChannel) {
+        if (!transfer.lightningRoom) throw new Error('闪电传输请求无效');
+        transfer.lightningAbort = new AbortController();
+        transfer.lightningLastActivity = Date.now();
+        transfer.lightningChannel = openLightningChannel({
+          room: transfer.lightningRoom, role: 'send', signal: transfer.lightningAbort.signal,
+        });
+        const channel = await transfer.lightningChannel;
+        void channel.closed.then(() => {
+          // The receiver closes after persistence; completion arrives on the encrypted control channel.
+        }, () => {
+          if (transfer.window.nextOffset < transfer.file.size) failLightningTransfer(transferId);
+          // Last bytes may be persisted already; allow the control completion ACK to arrive.
+        });
+        if (!isCurrent()) { channel.close(); return; }
+      }
       await pumpFileTransfer({
         transfer, transferId, from: myId, session, isCurrent,
         send: async (payload) => {
+          if (transfer.mode === 'lightning') {
+            if (!isEncryptedBinaryChatEnvelope(payload) || !transfer.lightningChannel) throw new Error('闪电传输必须保持端到端加密');
+            await (await transfer.lightningChannel).send(payload);
+            transfer.lightningLastActivity = Date.now();
+            return;
+          }
+          if (!conn) throw new Error('文件连接已断开');
           await sendDataConnectionPayload(conn, payload);
           await waitForFileDataChannelBuffer(conn.dataChannel, {
             isCurrent,
@@ -757,7 +848,14 @@ export default function CallPage() {
       });
     } catch (err) {
       if (!isCurrent()) return;
-      if (!conn.open || conn.dataChannel?.readyState !== 'open') return;
+      if (transfer.mode === 'lightning') {
+        // A receiver may close its WT session after saving the final frame, before its
+        // independent control ACK arrives. Let that ACK or the bounded watchdog decide.
+        if (transfer.window.nextOffset === transfer.file.size) return;
+        failLightningTransfer(transferId, err instanceof Error ? err.message : '闪电传输失败，请重试');
+        return;
+      }
+      if (!conn?.open || conn.dataChannel?.readyState !== 'open') return;
       updateFileTransfer(transferId, {
         status: 'failed',
         error: err instanceof Error ? err.message : '文件发送失败',
@@ -766,10 +864,10 @@ export default function CallPage() {
     } finally {
       if (transfer.runId === runId) {
         transfer.isStarted = false;
-        if (isCurrent() && conn.open && transfer.needsPump) void startTransfer(transferId);
+        if (isCurrent() && (transfer.mode === 'lightning' || conn?.open) && transfer.needsPump) void startTransfer(transferId);
       }
     }
-  }, [myId, updateFileTransfer]);
+  }, [failLightningTransfer, myId, updateFileTransfer]);
 
   const flushPendingChatMessages = useCallback(async (
     conn: DataConnection,
@@ -821,6 +919,9 @@ export default function CallPage() {
         await session.acceptPeerKeyMessage(data);
         setIsChatSecure(true);
         await sendEncryptedDataPayload(conn, session, createFileTransferCapabilities(myId));
+        if (getLightningAvailability().available) {
+          await sendEncryptedDataPayload(conn, session, createFileTransferCapabilities(myId, true));
+        }
         for (const [transferId, transfer] of incomingFileTransfersRef.current) {
           await resumeIncomingFileTransfer(transferId, transfer);
         }
@@ -847,6 +948,8 @@ export default function CallPage() {
         if (isFileTransferCapabilities(payload)) {
           if (isPayloadPeerValid(payload, conn.peer)) {
             remoteFastFileSupportRef.current = payload.modes.includes('fast');
+            remoteLightningSupportRef.current = payload.modes.includes('lightning');
+            setRemoteLightningSupport(remoteLightningSupportRef.current);
           }
           return;
         }
@@ -901,6 +1004,7 @@ export default function CallPage() {
           }
           if (transfer.accepted) return;
           transfer.accepted = true;
+          transfer.lightningLastActivity = Date.now();
           transfer.window = resumeFileTransferWindow(transfer.window, {
             persistedOffset: payload.acknowledgedOffset,
             creditBytes: payload.creditBytes,
@@ -915,6 +1019,8 @@ export default function CallPage() {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
           const transfer = outgoingFileTransfersRef.current.get(payload.transferId);
           if (!transfer?.accepted) return;
+          transfer.lightningLastActivity = Date.now();
+          if (transfer.mode === 'lightning' && payload.resume) return;
           if (payload.resume) {
             transfer.runId = undefined;
             transfer.isStarted = false;
@@ -943,11 +1049,21 @@ export default function CallPage() {
             bytesTransferred: payload.bytesReceived,
           });
           outgoingFileTransfersRef.current.delete(payload.transferId);
+          transfer.lightningAbort?.abort();
           return;
         }
 
         if (isWireChatFileErrorPayload(payload)) {
           if (!isPayloadPeerValid(payload, conn.peer)) return;
+          const outgoing = outgoingFileTransfersRef.current.get(payload.transferId);
+          outgoing?.lightningAbort?.abort();
+          const incoming = incomingFileTransfersRef.current.get(payload.transferId);
+          if (incoming?.offer.mode === 'lightning') {
+            incomingFileTransfersRef.current.delete(payload.transferId);
+            incomingFileOffersRef.current.delete(payload.transferId);
+            incoming.lightningAbort?.abort();
+            void incoming.writable?.abort?.().catch(() => undefined);
+          }
           outgoingFileTransfersRef.current.delete(payload.transferId);
           updateFileTransfer(payload.transferId, {
             status: 'failed',
@@ -1042,6 +1158,20 @@ export default function CallPage() {
   }, []);
 
   const resetDataConnection = useCallback((abortTransfers = false) => {
+    for (const [id, transfer] of outgoingFileTransfersRef.current) {
+      if (transfer.mode === 'lightning') failLightningTransfer(id);
+    }
+    for (const [id, transfer] of incomingFileTransfersRef.current) {
+      if (transfer.offer.mode === 'lightning') failLightningTransfer(id);
+    }
+    for (const [id, offer] of incomingFileOffersRef.current) {
+      if (offer.mode !== 'lightning') continue;
+      incomingFileOffersRef.current.delete(id);
+      acceptingFileTransfersRef.current.delete(id);
+      updateFileTransfer(id, { status: 'failed', error: '闪电传输请求已失效，请对方重新发送' });
+    }
+    remoteLightningSupportRef.current = false;
+    setRemoteLightningSupport(false);
     resetChatCryptoState();
     dataMessageQueueRef.current = Promise.resolve();
     // Keep active disk writes serialized across a reconnect.
@@ -1081,7 +1211,7 @@ export default function CallPage() {
     }
     setIsDataConnected(false);
     setIsChatSecure(false);
-  }, [resetChatCryptoState, updateFileTransfer]);
+  }, [failLightningTransfer, resetChatCryptoState, updateFileTransfer]);
 
   useEffect(() => {
     const outgoingTransfers = outgoingFileTransfersRef.current;
@@ -1091,7 +1221,9 @@ export default function CallPage() {
     const pendingCompletions = pendingFileCompletionsRef.current;
 
     return () => {
+      for (const transfer of outgoingTransfers.values()) transfer.lightningAbort?.abort();
       for (const transfer of incomingTransfers.values()) {
+        transfer.lightningAbort?.abort();
         void transfer.writable?.abort?.();
       }
       outgoingTransfers.clear();
@@ -1314,6 +1446,7 @@ export default function CallPage() {
         bulkWatchdogCleanupRef.current = null;
         bulkDataConnRef.current = null;
         for (const transfer of outgoingFileTransfersRef.current.values()) {
+          if (transfer.mode === 'lightning') continue;
           transfer.runId = undefined;
           transfer.isStarted = false;
         }
@@ -1881,6 +2014,11 @@ export default function CallPage() {
     if (file && fileTransferMode === 'fast' && !remoteFastFileSupportRef.current) {
       throw new Error('对方尚未支持极速模式，请双方刷新到最新版本，或选择加密模式');
     }
+    if (file && fileTransferMode === 'lightning') {
+      const availability = getLightningAvailability();
+      if (!availability.available) throw new Error(availability.reason);
+      if (!remoteLightningSupportRef.current) throw new Error('对方暂不可用实验闪电模式，请双方更新并使用支持的浏览器');
+    }
 
     const transferId = file ? createTransferId() : undefined;
     const message = createLocalMessage({
@@ -1917,7 +2055,9 @@ export default function CallPage() {
 
     try {
       if (file && message.file) {
+        const lightningRoom = fileTransferMode === 'lightning' ? createLightningRoom() : undefined;
         outgoingFileTransfersRef.current.set(message.id, {
+          lightningRoom,
           file,
           messageId: message.id,
           isStarted: false,
@@ -1927,7 +2067,7 @@ export default function CallPage() {
           lastProgressUpdateAt: 0,
           lastProgressUpdateBytes: 0,
         });
-        await sendEncryptedDataPayload(conn, session, createWireChatFileOffer(message, myId));
+        await sendEncryptedDataPayload(conn, session, createWireChatFileOffer(message, myId, lightningRoom));
       } else {
         await sendEncryptedDataPayload(conn, session, createWireChatMessage(message, myId));
       }
@@ -1970,7 +2110,14 @@ export default function CallPage() {
     }
 
     if (incomingFileTransfersRef.current.has(messageId) || acceptingFileTransfersRef.current.has(messageId)) return;
+    if (offer.mode === 'lightning') {
+      const availability = getLightningAvailability();
+      if (!availability.available) throw new Error(availability.reason);
+    }
     acceptingFileTransfersRef.current.add(messageId);
+    const acceptingGeneration = connectionGenerationRef.current;
+    const acceptanceIsCurrent = () => connectionGenerationRef.current === acceptingGeneration
+      && incomingFileOffersRef.current.get(messageId) === offer && dataConnRef.current === conn && conn.open;
 
     let writable: FileSystemWritableFileStreamLike | undefined;
     let saveMode: WireChatFileSaveMode = 'memory';
@@ -1993,7 +2140,9 @@ export default function CallPage() {
         }
       }
 
+      if (!acceptanceIsCurrent()) throw new DOMException('文件请求已失效', 'AbortError');
       const session = await ensureChatCryptoSession(conn);
+      if (!acceptanceIsCurrent()) throw new DOMException('文件请求已失效', 'AbortError');
       if (!session.isReady()) {
         throw new Error('加密通道尚未就绪');
       }
@@ -2029,13 +2178,13 @@ export default function CallPage() {
         creditBytes,
         mode
       ));
+      if (mode === 'lightning') void receiveLightningFile(messageId, transfer, session);
     } catch (err) {
       const errorName = typeof err === 'object' && err !== null && 'name' in err
         ? (err as { name?: unknown }).name
         : undefined;
+      await writable?.abort?.().catch(() => undefined);
       if (errorName === 'AbortError') return;
-
-      await writable?.abort?.();
       incomingFileTransfersRef.current.delete(messageId);
       updateFileTransfer(messageId, {
         status: 'failed',
@@ -2045,7 +2194,7 @@ export default function CallPage() {
     } finally {
       acceptingFileTransfersRef.current.delete(messageId);
     }
-  }, [ensureChatCryptoSession, myId, sendFileControlPayload, updateFileTransfer]);
+  }, [ensureChatCryptoSession, myId, receiveLightningFile, sendFileControlPayload, updateFileTransfer]);
 
   const handleDeclineFileTransfer = useCallback(async (messageId: string) => {
     if (!myId) {
@@ -2345,6 +2494,7 @@ export default function CallPage() {
       </div>
 
       <ChatPanel
+        lightningUnavailableReason={getLightningAvailability().reason ?? (!remoteLightningSupport ? '对方暂不可用闪电模式，请双方更新并连接' : undefined)}
         isOpen={isChatOpen}
         isConnected={isDataConnected}
         isSecure={isChatSecure}

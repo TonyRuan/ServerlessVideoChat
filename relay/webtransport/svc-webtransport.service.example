@@ -1,0 +1,24 @@
+[Unit]
+Description=SVC experimental encrypted file WebTransport relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=svc-webtransport
+Group=svc-webtransport
+EnvironmentFile=/etc/svc-webtransport/relay.env
+ExecStart=/opt/svc-webtransport/svc-webtransport-relay
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=4096
+MemoryMax=1G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

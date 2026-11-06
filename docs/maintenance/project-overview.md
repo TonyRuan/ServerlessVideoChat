@@ -28,6 +28,8 @@ Home does not request camera or microphone permission on page load. Its media bu
 
 ## User-Facing Capabilities
 
+- Optional web-only experimental lightning file mode via an independently configured WebTransport relay; file contents retain application AES-GCM, while control messages use WebRTC. Unavailable clients show a reason. See `webtransport.md` for deployment and lifecycle limits.
+
 - Cross-device P2P audio/video calls.
 - Local media controls, quality switching, and video fit mode.
 - Session-level initial media defaults for video, voice-only, and text-only meetings; disabled hardware is requested only when a participant later enables it.

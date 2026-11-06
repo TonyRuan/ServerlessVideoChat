@@ -95,6 +95,8 @@ Tracked details include:
 
 ## Chat And DataChannel
 
+The optional web-only `lightning` file mode uses a separate WebTransport relay for AES-GCM encrypted file frames; control messages still use this WebRTC channel. It requires explicit capability and mode agreement. It fails explicitly on session loss rather than using the WebRTC resume path. Existing `encrypted` and `fast` modes below are unchanged. See [webtransport.md](webtransport.md).
+
 The reliable control DataConnection carries:
 
 - heart reactions

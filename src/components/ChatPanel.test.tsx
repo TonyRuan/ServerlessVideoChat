@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatMessage } from '../lib/chatStorage';
+import type { ChatMessage, FileTransferMode } from '../lib/chatStorage';
 import { useChatStore } from '../stores/chatStore';
 import { ChatPanel, FileTransferModeSelector } from './ChatPanel';
 
@@ -101,6 +101,15 @@ describe('ChatPanel accessibility', () => {
     expect(markup).toContain('>接受</button>');
   });
 
+  it('explains relay routing and end-to-end encryption before accepting lightning', () => {
+    useChatStore.setState({ messages: [makeFileMessage('lightning')] });
+    const markup = renderPanel();
+    expect(markup).toContain('实验闪电模式');
+    expect(markup).toContain('经服务器中转，文件仍端到端加密。');
+    expect(markup.indexOf('经服务器中转')).toBeLessThan(markup.indexOf('>接受</button>'));
+    expect(markup).not.toContain('跳过额外文件加密');
+  });
+
   it('keeps the mode visible on completed downloadable file cards', () => {
     const message = makeFileMessage('fast');
     message.direction = 'out';
@@ -116,7 +125,7 @@ describe('ChatPanel accessibility', () => {
   });
 });
 
-const makeFileMessage = (mode?: 'encrypted' | 'fast'): ChatMessage => ({
+const makeFileMessage = (mode?: FileTransferMode): ChatMessage => ({
   id: 'file-message',
   conversationId: 'test-conversation',
   direction: 'in',
@@ -148,5 +157,22 @@ describe('FileTransferModeSelector', () => {
     expect(markup.match(/<input[^>]*value="fast"[^>]*>/)?.[0]).toContain('checked');
     expect(markup).toContain('跳过额外文件加密，仍有 WebRTC 传输加密。');
     expect(markup).toContain('实际速度取决于网络和设备。');
+  });
+
+  it('describes lightning without promising speed or dropping encryption', () => {
+    const markup = renderToStaticMarkup(<FileTransferModeSelector mode="lightning" onChange={() => undefined} />);
+    expect(markup.match(/<input[^>]*value="lightning"[^>]*>/)?.[0]).toContain('checked');
+    expect(markup).toContain('经服务器中转，文件仍端到端加密。实验功能，失败可改用其他模式重试。');
+    expect(markup).not.toContain('跳过额外文件加密');
+  });
+
+  it('disables only lightning when unavailable and associates the reason with its radio', () => {
+    const markup = renderToStaticMarkup(<FileTransferModeSelector mode="encrypted" onChange={() => undefined} lightningUnavailableReason="对方尚未支持闪电模式" />);
+    const radio = markup.match(/<input[^>]*value="lightning"[^>]*>/)?.[0];
+    expect(radio).toContain('disabled');
+    expect(radio).toContain('aria-describedby=');
+    expect(markup).toContain('实验闪电模式不可用：对方尚未支持闪电模式');
+    expect(markup.match(/<input[^>]*value="encrypted"[^>]*>/)?.[0]).not.toContain('disabled');
+    expect(markup.match(/<input[^>]*value="fast"[^>]*>/)?.[0]).not.toContain('disabled');
   });
 });

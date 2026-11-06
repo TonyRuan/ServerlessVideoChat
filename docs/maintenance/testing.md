@@ -63,6 +63,8 @@ For protocol, session, file-transfer flow, TURN, recovery, and stats helpers, te
 
 ## Browser Validation Notes
 
+For experimental lightning, run `src/lib/webTransportFile.test.ts` alongside the protocol/transport/UI tests, and `go test ./...` in `relay/webtransport`. Real browser QA must verify the new mode performs WT `/file` traffic, persists exact bytes, and receives completion; also test missing browser capability, relay loss, and encrypted/fast regressions. See `webtransport.md`.
+
 For measured file-transfer results, benchmark scope, and excluded samples, see [file-transfer-performance.md](file-transfer-performance.md).
 
 The call page requests camera and microphone permission. Do not approve browser permission prompts unless the user explicitly authorizes it.

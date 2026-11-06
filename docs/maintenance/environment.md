@@ -6,6 +6,13 @@ Never print, commit, paste into docs, or hardcode the actual values from `.env.l
 
 ## Variables
 
+- `VITE_WEBTRANSPORT_URL`: optional experimental lightning relay HTTPS `/file` endpoint. Without it the mode is unavailable. Both peers must use the same relay.
+- `VITE_WEBTRANSPORT_CERT_SHA256`: development-only localhost certificate pin; ignored in production. See `webtransport.md` and `relay/webtransport/README.md` for relay-side variables.
+
+The production Pages build variable `VITE_WEBTRANSPORT_URL` is configured as `https://lightning.uavserver.cn/file` (2026-11-06). Local manual builds load the same endpoint from ignored `.env.local`; changing a Pages build variable does not alter an already-built `dist`. Public relay readiness and deployment verification are recorded in `webtransport.md`.
+
+Production Pages also stores the existing `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, and `VITE_TURN_CREDENTIAL` fallback as encrypted build variables, so Git-triggered builds preserve the same fallback as manual builds. These values still become client-visible when Vite compiles them; encrypted build storage is not a replacement for the planned short-lived credential migration.
+
 - `CLOUDFLARE_API_TOKEN`: token used by local Wrangler deploys.
 - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare account id used by local Wrangler deploys.
 - `VITE_TURN_CREDENTIALS_URL`: optional credential endpoint override; defaults to `/api/turn-credentials`.

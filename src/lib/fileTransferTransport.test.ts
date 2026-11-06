@@ -15,14 +15,14 @@ async function sessions() {
 }
 
 describe('file transfer transport', () => {
-  it.each<FileTransferMode>(['encrypted', 'fast'])('replays lost acceptance with the agreed %s mode on zero-byte resume', (mode) => {
+  it.each<FileTransferMode>(['encrypted', 'fast', 'lightning'])('replays lost acceptance with the agreed %s mode on zero-byte resume', (mode) => {
     const payloads = createFileTransferResumePayloads('file', 'bob', 0, mode, 'file-system');
     expect(payloads[0].type).toBe('CHAT_FILE_ACCEPT');
     expect('mode' in payloads[0] ? payloads[0].mode : 'encrypted').toBe(mode);
     expect(payloads[1]).toMatchObject({ type: 'CHAT_FILE_CREDIT', resume: true, acknowledgedOffset: 0 });
     expect(createFileTransferResumePayloads('file', 'bob', CHUNK, mode, 'file-system')).toHaveLength(1);
   });
-  it.each<FileTransferMode>(['encrypted', 'fast'])('transfers multiple windows byte-for-byte in %s mode, including a partial last chunk', async (mode) => {
+  it.each<FileTransferMode>(['encrypted', 'fast', 'lightning'])('transfers multiple windows byte-for-byte in %s mode, including a partial last chunk', async (mode) => {
     const { sender, receiver } = await sessions();
     const encrypt = vi.spyOn(sender, 'encryptBytes');
     const decrypt = vi.spyOn(receiver, 'decryptBytes');
@@ -40,7 +40,7 @@ describe('file transfer transport', () => {
         send: async (wire) => {
           // PeerJS's binary unpacker returns ArrayBuffer for typed arrays.
           const data = wire instanceof Uint8Array ? wire.buffer : wire;
-          const frame = await decodeFileTransferPayload(data, receiver, 'alice', () => mode);
+          const frame = await decodeFileTransferPayload(data, receiver, 'alice', () => mode, mode === 'lightning' ? 'webtransport' : 'webrtc');
           expect(frame?.offset).toBe(persisted);
           result.set(frame!.data, persisted);
           persisted += frame!.data.length;
@@ -54,8 +54,8 @@ describe('file transfer transport', () => {
     expect(Buffer.compare(Buffer.from(source), Buffer.from(result))).toBe(0);
     expect(progress.every((value, i) => i === 0 || value > progress[i - 1])).toBe(true);
     expect(progress.at(-1)).toBe(source.length);
-    expect(encrypt.mock.calls.length > 0).toBe(mode === 'encrypted');
-    expect(decrypt.mock.calls.length > 0).toBe(mode === 'encrypted');
+    expect(encrypt.mock.calls.length > 0).toBe(mode !== 'fast');
+    expect(decrypt.mock.calls.length > 0).toBe(mode !== 'fast');
   });
 
   it('accepts an early ACK while send/drain has not returned', async () => {
@@ -83,6 +83,22 @@ describe('file transfer transport', () => {
     expect(await decodeFileTransferPayload(fast, receiver, 'bob', () => 'fast')).toBeNull();
     expect(await decodeFileTransferPayload(fast, receiver, 'alice', () => 'encrypted')).toBeNull();
     expect(await decodeFileTransferPayload(encrypted, receiver, 'alice', () => 'fast')).toBeNull();
+  });
+
+  it('keeps lightning encrypted and rejects plaintext or transport downgrades', async () => {
+    const { sender, receiver } = await sessions();
+    const frame = { transferId: 'file', from: 'alice', index: 0, offset: 0, data: new Uint8Array([1, 2, 3]) };
+    const lightning = await encodeFileTransferPayload(frame, 'lightning', sender);
+    const fast = await encodeFileTransferPayload(frame, 'fast', sender);
+    expect(lightning).toMatchObject({ type: 'CHAT_CIPHER_BINARY', version: 1 });
+    expect(getFileTransferCreditBytes('lightning')).toBe(8 * 1024 * 1024);
+    expect(await decodeFileTransferPayload(lightning, receiver, 'alice', () => 'lightning', 'webtransport')).toEqual(frame);
+    expect(await decodeFileTransferPayload(lightning, receiver, 'alice', () => 'lightning')).toBeNull();
+    expect(await decodeFileTransferPayload(lightning, receiver, 'alice', () => 'encrypted', 'webtransport')).toBeNull();
+    expect(await decodeFileTransferPayload(lightning, receiver, 'alice', () => undefined, 'webtransport')).toBeNull();
+    expect(await decodeFileTransferPayload(lightning, receiver, 'bob', () => 'lightning', 'webtransport')).toBeNull();
+    expect(await decodeFileTransferPayload(fast, receiver, 'alice', () => 'lightning', 'webtransport')).toBeNull();
+    expect(await decodeFileTransferPayload(fast, receiver, 'alice', () => 'fast', 'webtransport')).toBeNull();
   });
 
   it('cancels a stale pump after encryption and resumes only from persisted bytes', async () => {

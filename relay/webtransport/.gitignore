@@ -1,0 +1,5 @@
+*.exe
+svc-webtransport-relay
+*.pem
+*.key
+*.local

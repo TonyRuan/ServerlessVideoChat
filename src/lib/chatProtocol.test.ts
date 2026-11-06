@@ -302,6 +302,45 @@ describe('chatProtocol', () => {
     expect(isWireChatFileDeclinePayload({ ...declined, transferId: '' })).toBe(false);
   });
 
+  it('advertises lightning only when the caller has an available WebTransport relay', () => {
+    expect(createFileTransferCapabilities('peer-a').modes).toEqual(['encrypted', 'fast']);
+    const capable = createFileTransferCapabilities('peer-a', true);
+    expect(capable.modes).toEqual(['encrypted', 'fast', 'lightning']);
+    expect(isFileTransferCapabilities(capable)).toBe(true);
+    expect(isFileTransferCapabilities({ ...capable, modes: ['encrypted', 'lightning'] })).toBe(true);
+    expect(isFileTransferCapabilities({ ...capable, modes: ['lightning'] })).toBe(false);
+    expect(isFileTransferCapabilities({ ...capable, modes: [...capable.modes, 'lightning'] })).toBe(false);
+  });
+
+  it('binds lightning offers to explicit version 3 and a bounded room capability', () => {
+    const message: ChatMessage = {
+      id: 'lightning-1', conversationId: 'a:b', direction: 'out', kind: 'file',
+      file: { mimeType: 'application/zip', name: 'logs.zip', size: 1024 },
+      fileTransfer: { id: 'lightning-1', mode: 'lightning', status: 'waiting', bytesTransferred: 0 },
+      createdAt: 111, status: 'sending',
+    };
+    const room = 'af'.repeat(32);
+    expect(() => createWireChatFileOffer(message, 'peer-a')).toThrow('room capability');
+    expect(() => createWireChatFileOffer(message, 'peer-a', 'short')).toThrow('room capability');
+    const offer = createWireChatFileOffer(message, 'peer-a', room);
+    expect(offer).toMatchObject({ version: 3, mode: 'lightning', lightningRoom: room });
+    expect(isWireChatFileOfferPayload(offer)).toBe(true);
+    expect(message.fileTransfer).not.toHaveProperty('lightningRoom');
+    for (const lightningRoom of [undefined, '', 'a'.repeat(63), 'a'.repeat(65), 'G'.repeat(64), 'A'.repeat(64), 12]) {
+      expect(isWireChatFileOfferPayload({ ...offer, lightningRoom })).toBe(false);
+    }
+    for (const mode of [undefined, 'encrypted', 'fast']) {
+      expect(isWireChatFileOfferPayload({ ...offer, mode })).toBe(false);
+    }
+    expect(isWireChatFileOfferPayload({ ...offer, version: 1 })).toBe(false);
+    expect(isWireChatFileOfferPayload({ ...offer, version: 2 })).toBe(false);
+    expect(isWireChatFileOfferPayload({ ...offer, version: 1, mode: 'encrypted' })).toBe(false);
+    expect(isWireChatFileOfferPayload({ ...offer, version: 2, mode: 'fast' })).toBe(false);
+    const accepted = createWireChatFileAccept(message.id, 'peer-b', 'file-system', CHAT_FILE_MAX_CREDIT_WINDOW_BYTES, 'lightning');
+    expect(accepted.mode).toBe('lightning');
+    expect(isWireChatFileAcceptPayload(accepted)).toBe(true);
+  });
+
   it('keeps encrypted accepts legacy-compatible and explicitly accepts fast mode', () => {
     const accepted = createWireChatFileAccept('transfer-1', 'peer-b', 'file-system');
     expect(accepted).toEqual({

@@ -1,7 +1,7 @@
 # ServerlessVideoChat Codex Context
 
 > Keep this file concise. Update the relevant `docs/maintenance/*` document first, then keep this summary aligned.
-> Last synced: 2026-09-19.
+> Last synced: 2026-11-06.
 
 ## What This Project Is
 
@@ -17,6 +17,8 @@ Primary stack:
 - Capacitor 8 Android wrapper
 
 ## Current Behavior To Remember
+
+- Web-only optional `lightning` (实验闪电模式) uses configured `VITE_WEBTRANSPORT_URL` and `relay/webtransport/` to relay AES-GCM file frames. It retains encrypted WebRTC controls and 8MiB persisted-byte credit. Capability/offer version3 agreement is required; room secrets are ephemeral. Unavailable clients show a reason. Experimental failure is explicit with no automatic resume/downgrade; encrypted/fast remain unchanged. Details: `docs/maintenance/webtransport.md`.
 
 - Main routes are `/` and `/call/:remotePeerId?`.
 - Meeting recovery and initial media defaults live in the URL hash, for example `#session=...&role=host&video=0`. Missing `audio`/`video` parameters default to enabled for backward compatibility.
@@ -106,7 +108,7 @@ Server SSH access details are in `docs/maintenance/environment.md`. Do not print
 - `CallPage.tsx` has many responsibilities; keep edits scoped.
 - Static TURN `VITE_*` credentials become frontend-visible build data. Production should remove them only after Pages/coturn short-lived credential and forced-relay verification.
 - Current coturn infrastructure was observed on 2026-07-13 without TLS 443 and with a narrow relay range; do not perform a partial auth migration before DNS, certificate, and firewall prerequisites are ready.
-- Production `v0.0.8` was deployed on 2026-07-14. The credential Function route is live but returns `503` until Pages shared-secret bindings are configured, so production currently uses the static TURN fallback; coturn itself was not changed.
+- Production `v0.0.15` was deployed on 2026-11-06 with the independent public WebTransport relay and automatic TLS renewal. The credential Function still returns `503` until Pages shared-secret bindings are configured; complete static TURN fallback values are retained in Pages build configuration. Coturn itself was not changed. The current local proxy blocks WebTransport unless the relay is routed directly; see the public QA notes in `docs/maintenance/webtransport.md`.
 - WebRTC behavior depends on real browser/network/media permission state.
 - Cloudflare Pages uses root-path hosting; GitHub Pages uses `/ServerlessVideoChat/`.
 - Do not approve camera/microphone browser prompts unless the user explicitly authorizes it.

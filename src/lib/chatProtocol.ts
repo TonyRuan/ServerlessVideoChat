@@ -54,8 +54,9 @@ export interface FileTransferCapabilities {
 
 export interface WireChatFileOfferPayload {
   type: 'CHAT_FILE_OFFER';
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   mode?: FileTransferMode;
+  lightningRoom?: string;
   transferId: string;
   from: string;
   message: {
@@ -162,26 +163,30 @@ export function getFileTransferMode(value: { mode?: FileTransferMode }): FileTra
   return value.mode ?? 'encrypted';
 }
 
-export function createFileTransferCapabilities(from: string): FileTransferCapabilities {
+export function createFileTransferCapabilities(from: string, lightningAvailable = false): FileTransferCapabilities {
   return {
     type: 'FILE_TRANSFER_CAPABILITIES',
     version: 1,
     from,
-    modes: ['encrypted', 'fast'],
+    modes: lightningAvailable ? ['encrypted', 'fast', 'lightning'] : ['encrypted', 'fast'],
   };
 }
 
-export function createWireChatFileOffer(message: ChatMessage, from: string): WireChatFileOfferPayload {
+export function createWireChatFileOffer(message: ChatMessage, from: string, lightningRoom?: string): WireChatFileOfferPayload {
   if (!message.file || message.image || (message.kind !== 'file' && message.kind !== 'mixed')) {
     throw new Error('Message is not a file transfer');
   }
 
   const kind: 'file' | 'mixed' = message.kind;
   const mode = getFileTransferMode(message.fileTransfer ?? {});
+  if (mode === 'lightning' && !isLightningRoom(lightningRoom)) {
+    throw new Error('Lightning transfers require a valid room capability');
+  }
   return {
     type: 'CHAT_FILE_OFFER',
-    version: mode === 'fast' ? 2 : 1,
-    ...(mode === 'fast' ? { mode } : {}),
+    version: mode === 'lightning' ? 3 : mode === 'fast' ? 2 : 1,
+    ...(mode !== 'encrypted' ? { mode } : {}),
+    ...(mode === 'lightning' ? { lightningRoom } : {}),
     transferId: message.id,
     from,
     message: {
@@ -208,7 +213,7 @@ export function createWireChatFileAccept(
   return {
     type: 'CHAT_FILE_ACCEPT',
     version: 2,
-    ...(mode === 'fast' ? { mode } : {}),
+    ...(mode !== 'encrypted' ? { mode } : {}),
     transferId,
     from,
     saveMode,
@@ -422,6 +427,10 @@ function isValidChatText(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_CHAT_TEXT_CHARS;
 }
 
+export function isLightningRoom(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
 export function isFileTransferCapabilities(payload: unknown): payload is FileTransferCapabilities {
   if (typeof payload !== 'object' || payload === null) return false;
   const record = payload as Record<string, unknown>;
@@ -430,9 +439,9 @@ export function isFileTransferCapabilities(payload: unknown): payload is FileTra
     record.version === 1 &&
     isBoundedIdentifier(record.from) &&
     Array.isArray(record.modes) &&
-    record.modes.length <= 2 &&
+    record.modes.length <= 3 &&
     record.modes.includes('encrypted') &&
-    record.modes.every((mode) => mode === 'encrypted' || mode === 'fast') &&
+    record.modes.every((mode) => mode === 'encrypted' || mode === 'fast' || mode === 'lightning') &&
     new Set(record.modes).size === record.modes.length
   );
 }
@@ -446,9 +455,12 @@ export function isWireChatFileOfferPayload(payload: unknown): payload is WireCha
     if (record.mode !== undefined && record.mode !== 'encrypted') return false;
   } else if (record.version === 2) {
     if (record.mode !== 'fast') return false;
+  } else if (record.version === 3) {
+    if (record.mode !== 'lightning' || !isLightningRoom(record.lightningRoom)) return false;
   } else {
     return false;
   }
+  if (record.version !== 3 && record.lightningRoom !== undefined) return false;
   if (!isBoundedIdentifier(record.transferId) || !isBoundedIdentifier(record.from)) return false;
   if (typeof record.message !== 'object' || record.message === null) return false;
 
@@ -470,7 +482,7 @@ export function isWireChatFileAcceptPayload(payload: unknown): payload is WireCh
   return (
     record.type === 'CHAT_FILE_ACCEPT' &&
     record.version === 2 &&
-    (record.mode === undefined || record.mode === 'encrypted' || record.mode === 'fast') &&
+    (record.mode === undefined || record.mode === 'encrypted' || record.mode === 'fast' || record.mode === 'lightning') &&
     isNonEmptyString(record.transferId) &&
     isNonEmptyString(record.from) &&
     (record.saveMode === 'file-system' || record.saveMode === 'memory') &&

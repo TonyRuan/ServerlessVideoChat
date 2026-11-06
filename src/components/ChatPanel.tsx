@@ -46,6 +46,7 @@ interface ChatPanelProps {
   connectionIssue?: string | null;
   isPersistent?: boolean;
   peerLabel?: string;
+  lightningUnavailableReason?: string;
   onClose: () => void;
   onSend: (input: { text?: string; image?: ChatImageAttachment; file?: File; fileTransferMode?: FileTransferMode }) => Promise<void>;
   onAcceptFileTransfer: (messageId: string) => Promise<void>;
@@ -160,16 +161,18 @@ export function FileTransferModeSelector({
   mode,
   onChange,
   disabled = false,
+  lightningUnavailableReason,
 }: {
   mode: FileTransferMode;
   onChange: (mode: FileTransferMode) => void;
   disabled?: boolean;
+  lightningUnavailableReason?: string;
 }) {
   const id = useId();
   return (
     <fieldset className="mb-2 rounded-lg border border-gray-700 px-3 py-2" disabled={disabled} aria-describedby={`${id}-description`}>
       <legend className="px-1 text-xs text-gray-300">文件传输模式</legend>
-      <div className="flex gap-4 text-xs text-gray-200">
+      <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-gray-200">
         <label className="flex cursor-pointer items-center gap-1.5">
           <input type="radio" name={id} value="encrypted" checked={mode === 'encrypted'} onChange={() => onChange('encrypted')} className="accent-blue-500" />
           加密模式
@@ -178,18 +181,25 @@ export function FileTransferModeSelector({
           <input type="radio" name={id} value="fast" checked={mode === 'fast'} onChange={() => onChange('fast')} className="accent-blue-500" />
           极速模式
         </label>
+        <label className={cn('flex items-center gap-1.5', lightningUnavailableReason ? 'cursor-not-allowed text-gray-500' : 'cursor-pointer')}>
+          <input type="radio" name={id} value="lightning" checked={mode === 'lightning'} onChange={() => onChange('lightning')} disabled={Boolean(lightningUnavailableReason)} aria-describedby={lightningUnavailableReason ? `${id}-unavailable` : undefined} className="accent-blue-500" />
+          实验闪电模式
+        </label>
       </div>
       <p id={`${id}-description`} className="mt-2 text-[11px] leading-relaxed text-gray-400">
-        {mode === 'fast'
+        {mode === 'lightning'
+          ? '经服务器中转，文件仍端到端加密。实验功能，失败可改用其他模式重试。'
+          : mode === 'fast'
           ? '跳过额外文件加密，仍有 WebRTC 传输加密。实际速度取决于网络和设备。'
           : '在 WebRTC 传输加密之上，额外加密文件内容。'}
       </p>
+      {lightningUnavailableReason && <p id={`${id}-unavailable`} className="mt-1 text-[11px] leading-relaxed text-gray-400">实验闪电模式不可用：{lightningUnavailableReason}</p>}
     </fieldset>
   );
 }
 
 const getFileTransferModeLabel = (message: ChatMessage) =>
-  message.fileTransfer?.mode === 'fast' ? '极速模式' : '加密模式';
+  message.fileTransfer?.mode === 'lightning' ? '实验闪电模式' : message.fileTransfer?.mode === 'fast' ? '极速模式' : '加密模式';
 
 export function ChatPanel({
   isOpen,
@@ -198,6 +208,7 @@ export function ChatPanel({
   connectionIssue,
   isPersistent = false,
   peerLabel,
+  lightningUnavailableReason,
   onClose,
   onSend,
   onAcceptFileTransfer,
@@ -635,6 +646,9 @@ export function ChatPanel({
                           {message.fileTransfer?.mode === 'fast' && message.fileTransfer.status === 'offered' && !isMine && (
                             <p className="mt-1 text-[11px] text-gray-400">跳过额外文件加密，仍有 WebRTC 传输加密。</p>
                           )}
+                          {message.fileTransfer?.mode === 'lightning' && message.fileTransfer.status === 'offered' && !isMine && (
+                            <p className="mt-1 text-[11px] text-gray-400">经服务器中转，文件仍端到端加密。实验功能，失败可改用其他模式重试。</p>
+                          )}
                           {getFileTransferLabel(message) && (
                             <p className={cn('mt-2 text-[11px]', isMine ? 'text-blue-100' : 'text-gray-400')}>
                               {getFileTransferLabel(message)}
@@ -738,7 +752,7 @@ export function ChatPanel({
           )}
 
           {selectedFile && (
-            <FileTransferModeSelector mode={fileTransferMode} onChange={setFileTransferMode} disabled={isSending} />
+            <FileTransferModeSelector mode={fileTransferMode} onChange={setFileTransferMode} disabled={isSending} lightningUnavailableReason={lightningUnavailableReason} />
           )}
 
           {(connectionIssue || error) && <p className="mb-2 text-xs text-amber-300">{connectionIssue || error}</p>}

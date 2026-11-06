@@ -1,6 +1,14 @@
 # Deployment
 
+Experimental lightning file mode also requires the independent UDP WebTransport service in `relay/webtransport/`. Configure a verified public endpoint via `VITE_WEBTRANSPORT_URL` before the frontend build. It is not supplied by Pages or the TURN credential Function. See [webtransport.md](webtransport.md); do not ship localhost certificate pins or silently reuse an unrelated TCP service.
+
 Cloudflare Pages is the preferred deployment target.
+
+## 2026-11-06 lightning release
+
+Version `0.0.15` was uploaded to production as `61b4a3ac-62ca-42d5-84b9-3218a8839340`; the public application is `https://chat.uavserver.cn`. Production builds now have `VITE_WEBTRANSPORT_URL=https://lightning.uavserver.cn/file` and the existing complete static TURN fallback variables, so subsequent Git-triggered builds retain both capabilities. No localhost certificate pin is shipped. Public transfer validation and the local proxy limitation are recorded in [webtransport.md](webtransport.md).
+
+The previous production deployment was `002139ea-75d7-4a6b-b7ea-daf99d7b96ae`. The new relay is independent of Pages and coturn; its service and certificate renewal rollback are documented separately. The credential Function remains `503` because the pre-existing short-lived TURN migration is incomplete; this release preserves static fallback and does not change coturn authentication.
 
 ## Cloudflare Pages
 
